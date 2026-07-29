@@ -12802,7 +12802,7 @@
         "type": "string",
         "required": true,
         "positional": true,
-        "help": "用户 sec_uid（URL 末尾部分）"
+        "help": "用户 sec_uid（个人主页 URL 末尾部分，也可直接传整条主页 URL）"
       },
       {
         "name": "limit",

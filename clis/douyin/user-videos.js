@@ -7,7 +7,10 @@ export const DEFAULT_COMMENT_LIMIT = 10;
 // sec_uid is base64url. Anything else (a nickname, a numeric UID, a search term)
 // still resolves to a Douyin page, so without this guard the scrape silently
 // returns some other account's videos.
-const SEC_UID_PATTERN = /^[A-Za-z0-9_-]{8,}$/;
+// Current Douyin sec_uid values use the stable `MS4wLjABAAAA` prefix followed
+// by a long base64url payload. Requiring the prefix prevents ordinary ASCII
+// nicknames and long numeric UIDs from passing a shape-only character check.
+const SEC_UID_PATTERN = /^MS4wLjABAAAA[A-Za-z0-9_-]{8,}$/;
 const SEC_UID_HINT = 'sec_uid looks like MS4wLjABAAAA… — it is the last path segment of https://www.douyin.com/user/<sec_uid>, not a nickname or a numeric UID.';
 export function normalizeSecUid(input) {
     const raw = String(input ?? '').trim();
