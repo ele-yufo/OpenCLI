@@ -12854,14 +12854,7 @@
         "type": "int",
         "default": 20,
         "required": false,
-        "help": "每页数量"
-      },
-      {
-        "name": "page",
-        "type": "int",
-        "default": 1,
-        "required": false,
-        "help": "页码"
+        "help": "最多返回多少个作品（跨页自动收集）"
       },
       {
         "name": "status",
@@ -12883,6 +12876,10 @@
       "status",
       "play_count",
       "digg_count",
+      "comment_count",
+      "collect_count",
+      "share_count",
+      "duration",
       "create_time"
     ],
     "type": "js",
