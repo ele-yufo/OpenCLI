@@ -412,12 +412,13 @@ export async function waitForSubmittedJobsAfter(
   const expected = promptFromFullCommand(prompt);
   const expectedCore = promptCore(prompt);
   const expectedSignature = promptKeySignature(prompt);
+  const historyPageSize = Math.min(100, Math.max(20, expectedCount));
   let ambiguousIds = [];
   let consecutivePollFailures = 0;
   while (Date.now() < deadline) {
     let recent = [];
     try {
-      recent = await fetchHistory(page, userId, 20);
+      recent = await fetchHistory(page, userId, historyPageSize);
       consecutivePollFailures = 0;
     } catch (error) {
       if (error instanceof AuthRequiredError) throw error;
@@ -1423,6 +1424,17 @@ export async function selectSiteSetting(page, anchorText, candidates, targetText
   if (target.changed) {
     await page.click('[data-opencli-setting-target="1"]');
     await page.wait(0.4);
+    const verified = await readSiteSettings(page);
+    const selected = anchorText === 'Video Resolution'
+      ? String(verified.videoResolution || '').toUpperCase()
+      : anchorText === 'Video Batch Size'
+        ? String(verified.videoBatchSize || '')
+        : null;
+    if (selected !== targetText) {
+      throw new CommandExecutionError(
+        `Could not verify Midjourney ${anchorText}: expected ${targetText}, found ${selected || 'unknown'}`,
+      );
+    }
   }
   return target.changed;
 }

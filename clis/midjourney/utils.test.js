@@ -16,6 +16,7 @@ import {
   promptFromFullCommand,
   promptKeySignature,
   jobStatusRow,
+  selectSiteSetting,
   waitForCompletedJob,
   waitForDerivedJob,
   waitForSubmittedJobsAfter,
@@ -114,6 +115,35 @@ it('submission correlation returns exactly the new prompt matches in enqueue ord
   )).toEqual([first, second]);
 });
 
+it('submission correlation requests enough history rows for the largest repeat batch', async () => {
+  const submittedAt = Date.parse('2026-07-30T00:00:00Z');
+  const history = Array.from({ length: 40 }, (_, index) => ({
+    id: `${String(index).padStart(8, '0')}-1111-1111-1111-${String(index).padStart(12, '0')}`,
+    full_command: 'repeat test --v 8.2 --sd --fast --repeat 40',
+    enqueue_time: new Date(submittedAt + index * 1000).toISOString(),
+  }));
+  const requestedSizes = [];
+  const page = {
+    async fetchJson(endpoint) {
+      const size = Number(new URL(endpoint, 'https://www.midjourney.com').searchParams.get('page_size'));
+      requestedSizes.push(size);
+      return { data: history.slice(0, size) };
+    },
+    async wait() {},
+  };
+  const ids = await waitForSubmittedJobsAfter(
+    page,
+    'user',
+    'repeat test --v 8.2 --sd --fast --repeat 40',
+    new Set(),
+    1,
+    submittedAt,
+    40,
+  );
+  expect(ids).toHaveLength(40);
+  expect(requestedSizes).toEqual([40]);
+});
+
 it('submission correlation tolerates UI-only local reference weights omitted from history', async () => {
   const jobId = '77777777-7777-7777-7777-777777777777';
   const submittedAt = Date.parse('2026-07-30T00:00:00Z');
@@ -207,6 +237,77 @@ it('job cancellation uses the current web API contract and rejects HTTP failures
 
   globalThis.fetch.mockResolvedValueOnce(new Response('blocked', { status: 409 }));
   await expect(cancelMidjourneyJob(page, JOB)).rejects.toThrow(/HTTP 409 blocked/);
+});
+
+it('setting mutation verifies the selected account-wide value after clicking', async () => {
+  const settings = {
+    model: 'v8.2',
+    imageResolution: 'sd',
+    personalization: false,
+    raw: false,
+    speed: 'fast',
+    videoResolution: 'hd',
+    videoBatchSize: 4,
+  };
+  const page = {
+    evaluate: vi.fn()
+      .mockResolvedValueOnce(true)
+      .mockResolvedValueOnce(settings)
+      .mockResolvedValueOnce({ ok: true, changed: true })
+      .mockResolvedValueOnce(true)
+      .mockResolvedValueOnce({ ...settings, videoResolution: 'sd' }),
+    click: vi.fn(),
+    wait: vi.fn(),
+  };
+  await expect(selectSiteSetting(page, 'Video Resolution', ['SD', 'HD'], 'SD')).resolves.toBe(true);
+  expect(page.click).toHaveBeenCalledWith('[data-opencli-setting-target="1"]');
+});
+
+it('setting mutation verifies the selected video batch size after clicking', async () => {
+  const settings = {
+    model: 'v8.2',
+    imageResolution: 'sd',
+    personalization: false,
+    raw: false,
+    speed: 'fast',
+    videoResolution: 'sd',
+    videoBatchSize: 4,
+  };
+  const page = {
+    evaluate: vi.fn()
+      .mockResolvedValueOnce(true)
+      .mockResolvedValueOnce(settings)
+      .mockResolvedValueOnce({ ok: true, changed: true })
+      .mockResolvedValueOnce(true)
+      .mockResolvedValueOnce({ ...settings, videoBatchSize: 1 }),
+    click: vi.fn(),
+    wait: vi.fn(),
+  };
+  await expect(selectSiteSetting(page, 'Video Batch Size', ['1', '2', '4'], '1')).resolves.toBe(true);
+});
+
+it('setting mutation fails closed when the click does not change the account-wide value', async () => {
+  const settings = {
+    model: 'v8.2',
+    imageResolution: 'sd',
+    personalization: false,
+    raw: false,
+    speed: 'fast',
+    videoResolution: 'hd',
+    videoBatchSize: 4,
+  };
+  const page = {
+    evaluate: vi.fn()
+      .mockResolvedValueOnce(true)
+      .mockResolvedValueOnce(settings)
+      .mockResolvedValueOnce({ ok: true, changed: true })
+      .mockResolvedValueOnce(true)
+      .mockResolvedValueOnce(settings),
+    click: vi.fn(),
+    wait: vi.fn(),
+  };
+  await expect(selectSiteSetting(page, 'Video Resolution', ['SD', 'HD'], 'SD'))
+    .rejects.toThrow(/expected SD, found HD/);
 });
 
 it('submission and derived-job polling stop after three consecutive API failures', async () => {

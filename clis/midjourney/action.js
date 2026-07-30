@@ -259,11 +259,19 @@ cli({
     let primaryError = null;
     try {
       if (VIDEO_GENERATION_ACTIONS.has(operation) || (operation === 'rerun' && sourceVideo)) {
+        // Mark restoration from the observed baseline before attempting either
+        // click. A click can mutate the account-wide value and still fail its
+        // post-click verification, so assigning only after success would skip
+        // the finally-path restoration precisely when it is most needed.
+        changedResolution = videoResolution !== 'auto'
+          && originalSettings.videoResolution !== effectiveVideoResolution;
+        changedBatch = String(kwargs['batch-size']).toLowerCase() !== 'auto'
+          && originalSettings.videoBatchSize !== batchSize;
         if (videoResolution !== 'auto') {
-          changedResolution = await selectSiteSetting(page, 'Video Resolution', ['SD', 'HD'], effectiveVideoResolution.toUpperCase());
+          await selectSiteSetting(page, 'Video Resolution', ['SD', 'HD'], effectiveVideoResolution.toUpperCase());
         }
         if (String(kwargs['batch-size']).toLowerCase() !== 'auto') {
-          changedBatch = await selectSiteSetting(page, 'Video Batch Size', ['1', '2', '4'], String(batchSize));
+          await selectSiteSetting(page, 'Video Batch Size', ['1', '2', '4'], String(batchSize));
         }
       }
       await closeSettingsPanel(page);
