@@ -1,6 +1,6 @@
 ---
 name: opencli-usage
-description: Use at the start of any OpenCLI session — this is the top-level map of what `opencli` can do, how to discover adapters, what flags and output formats are universal, and which specialized skill to load next. Point here when an agent asks "what can opencli do?" or "how do I find the right command?".
+description: "Orient direct website, app, and platform access through OpenCLI when source-native adapters, authenticated browser state, or local and external CLI passthrough are needed. Use at the start of an OpenCLI route and when discovering current adapters, commands, strategies, or browser requirements. Triggers: OpenCLI / 平台直连 / 登录态内容 / 站点适配器 / opencli adapter / authenticated source access."
 allowed-tools: Bash(opencli:*), Read
 ---
 
@@ -153,18 +153,10 @@ opencli completion bash   # also: zsh, fish
 | Drive a live browser ad-hoc (no adapter available, or prototyping) | `opencli-browser` |
 | Write a new adapter, or add a command to an existing site | `opencli-adapter-author` |
 | Fix a broken adapter after a command failure | `opencli-autofix` |
-| Route a search / lookup / research request to the right adapter | `smart-search` |
+| Route an ordinary search, lookup, link-reading, or one-off research request | `source-first-search` |
 
-## Commands that used to exist
+## Operating rules
 
-The following were removed in the PR #1094 consolidation — don't try to invoke them:
-
-- `opencli explore <url>` — superseded by `opencli browser network` + `opencli browser find` for live API discovery, and by the `opencli-adapter-author` workflow for capture.
-- `opencli record <url>` — removed; manual capture now lives in `opencli browser network --detail`.
-- `opencli web read` / `opencli desktop *` as top-level groups — folded into their respective adapters (`opencli web read` still exists as the `web` adapter's `read` command, but there is no standalone `web` / `desktop` top-level group command).
-
-## Don't
-
-- Don't paste this skill's command list into your plan; it will rot. Call `opencli list -f json` at the start of a task instead.
-- Don't assume every adapter needs a browser — strategy `PUBLIC` and `LOCAL` don't. Check the `strategy` field.
-- Don't silently fall back from a failing adapter to a hand-rolled `fetch` — `--trace retain-on-failure` gives you the browser evidence and adapter source path. Do that first.
+- Start each task from `opencli list -f json` and current command help so the live registry defines available capabilities.
+- Read the selected adapter's strategy before deciding whether browser state is required; `PUBLIC` and `LOCAL` routes run without it.
+- On adapter failure, retain a trace and follow `opencli-autofix` before changing retrieval methods.
