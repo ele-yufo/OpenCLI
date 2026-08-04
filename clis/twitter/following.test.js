@@ -53,6 +53,27 @@ describe('twitter following helpers', () => {
         expect(user?.screen_name).toBe('bob');
     });
 
+    it('typed-fails when upstream omits screen_name identity', () => {
+        expect(() => __test__.extractUser({
+            __typename: 'User',
+            legacy: { description: 'no names', followers_count: 7 },
+        })).toThrow(CommandExecutionError);
+    });
+
+    it('surfaces empty name display when upstream omits only name', () => {
+        const user = __test__.extractUser({
+            __typename: 'User',
+            core: { screen_name: 'alice' },
+            legacy: { description: 'no display name', followers_count: 7 },
+        });
+        expect(user).toMatchObject({
+            screen_name: 'alice',
+            name: '',
+            bio: 'no display name',
+            followers: 7,
+        });
+    });
+
     it('parses following timeline with users and cursor', () => {
         const payload = {
             data: {
@@ -326,5 +347,13 @@ describe('twitter following command', () => {
         const page = createFollowingPage([followingPayload([], null)]);
 
         await expect(command.func(page, { user: 'elonmusk', limit: 10 })).rejects.toBeInstanceOf(EmptyResultError);
+    });
+
+    it('surfaces the private-following privacy hint when result.timeline is empty', async () => {
+        const command = getRegistry().get('twitter/following');
+        const page = createFollowingPage([{ data: { user: { result: { __typename: 'User', timeline: {} } } } }]);
+
+        await expect(command.func(page, { user: 'simonw', limit: 10 }))
+            .rejects.toMatchObject({ hint: expect.stringContaining('following list to private') });
     });
 });

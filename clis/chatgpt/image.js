@@ -4,7 +4,7 @@ import * as fs from 'node:fs';
 import { cli, Strategy } from '@jackwener/opencli/registry';
 import { saveBase64ToFile } from '@jackwener/opencli/utils';
 import { ArgumentError, CommandExecutionError, EmptyResultError } from '@jackwener/opencli/errors';
-import { activateChatGPTImageTool, clearChatGPTDraft, getChatGPTVisibleImageUrls, normalizeBooleanFlag, parseChatGPTConversationId, prepareChatGPTImagePaths, resolveAspectAriaLabel, sendChatGPTMessage, setChatGPTImageAspect, waitForChatGPTImages, getChatGPTImageAssets, uploadChatGPTImages } from './utils.js';
+import { activateChatGPTImageTool, clearChatGPTDraft, getChatGPTVisibleImageUrls, navigateToProject, normalizeBooleanFlag, parseChatGPTConversationId, prepareChatGPTImagePaths, resolveAspectAriaLabel, sendChatGPTMessage, setChatGPTImageAspect, unwrapEvaluateResult, waitForChatGPTImages, getChatGPTImageAssets, uploadChatGPTImages } from './utils.js';
 
 const CHATGPT_DOMAIN = 'chatgpt.com';
 
@@ -54,7 +54,7 @@ function buildPrompt(prompt, imageCount) {
 }
 
 async function currentChatGPTLink(page) {
-    const url = await page.evaluate('window.location.href').catch(() => '');
+    const url = unwrapEvaluateResult(await page.evaluate('window.location.href').catch(() => ''));
     return typeof url === 'string' && url ? url : 'https://chatgpt.com';
 }
 
@@ -72,6 +72,7 @@ export const imageCommand = cli({
     args: [
         { name: 'prompt', positional: true, required: true, help: 'Image prompt to send to ChatGPT' },
         { name: 'image', help: 'Local image path to attach before prompting; comma-separated paths are supported' },
+        { name: 'project', valueRequired: true, help: 'Start image generation inside a ChatGPT project ID or /g/g-p-<id> URL' },
         { name: 'op', help: 'Output directory (default: ~/Pictures/chatgpt)' },
         { name: 'sd', type: 'boolean', default: false, help: 'Skip download shorthand; only show ChatGPT link' },
         { name: 'timeout', type: 'int', required: false, default: 240, help: 'Max seconds for the overall command (default: 240)' },
@@ -89,22 +90,22 @@ export const imageCommand = cli({
         if (!Number.isInteger(timeout) || timeout < 1) {
             throw new ArgumentError('--timeout must be a positive integer (seconds)');
         }
-
         const convInput = kwargs.conv === undefined || kwargs.conv === null ? '' : String(kwargs.conv).trim();
         const conversationId = convInput ? parseChatGPTConversationId(convInput) : '';
         const aspectAriaLabel = resolveAspectAriaLabel(kwargs.aspect);
-
         const preparedImages = imagePaths.length ? await prepareChatGPTImagePaths(imagePaths) : { ok: true, paths: [] };
         if (!preparedImages.ok) {
             throw new ArgumentError(preparedImages.reason);
         }
 
-        // Navigate to /c/<id> when continuing, otherwise /new (full reload to
-        // clear React sidebar state).
-        const targetUrl = conversationId
-            ? `https://${CHATGPT_DOMAIN}/c/${conversationId}`
-            : `https://${CHATGPT_DOMAIN}/new`;
-        await page.goto(targetUrl, { settleMs: 2000 });
+        // Navigate with full reload to clear React sidebar state before editing the draft.
+        if (conversationId) {
+            await page.goto(`https://${CHATGPT_DOMAIN}/c/${conversationId}`, { settleMs: 2000 });
+        } else if (kwargs.project) {
+            await navigateToProject(page, kwargs.project);
+        } else {
+            await page.goto(`https://${CHATGPT_DOMAIN}/new`, { settleMs: 2000 });
+        }
         await clearChatGPTDraft(page);
 
         if (imagePaths.length) {
@@ -139,9 +140,7 @@ export const imageCommand = cli({
 
         const beforeUrls = await getChatGPTVisibleImageUrls(page);
 
-        // When continuing a conversation the user prompt already has context,
-        // so send it verbatim. Fresh chats keep the legacy "Generate an image
-        // of:" / "Edit the attached image:" wrappers for backward compatibility.
+        // Send an explicit generation/editing prompt so ChatGPT returns image assets.
         const promptToSend = conversationId ? prompt : buildPrompt(prompt, imagePaths.length);
         const sent = await sendChatGPTMessage(page, promptToSend);
         if (!sent) {
@@ -157,7 +156,7 @@ export const imageCommand = cli({
         for (let ci = 0; ci < 10; ci++) {
             const url = await currentChatGPTLink(page);
             if (url.includes('/c/')) { convUrl = url; break; }
-            await page.wait(2);
+            await page.sleep(2);
         }
         if (!convUrl) {
             convUrl = await currentChatGPTLink(page);

@@ -297,6 +297,94 @@ describe('Page active target tracking', () => {
     }));
   });
 
+  // Regression: a Page instance can keep re-sending a cached targetId after the tab
+  // has been closed externally, so the extension throws
+  // "Page not found: <id> — stale page identity" on follow-up navigation.
+  // goto() now drops the stale identity and retries once without it so the extension's
+  // session lease can resolve through to a live tab.
+  it('drops a stale page identity and retries navigate once', async () => {
+    sendCommandFullMock
+      .mockResolvedValueOnce({ data: { url: 'https://example.com/first' }, page: 'page-1' })
+      .mockRejectedValueOnce(new Error('Page not found: deadbeef — stale page identity'))
+      .mockResolvedValueOnce({ data: { url: 'https://example.com/second' }, page: 'page-2' });
+
+    const page = new Page('site:youtube', undefined, undefined, undefined, 'adapter', 'persistent');
+
+    await page.goto('https://example.com/first', { waitUntil: 'none' });
+    expect(page.getActivePage()).toBe('page-1');
+
+    await page.goto('https://example.com/second', { waitUntil: 'none' });
+    expect(page.getActivePage()).toBe('page-2');
+
+    expect(sendCommandFullMock).toHaveBeenCalledTimes(3);
+    // First retry attempt carried the stale page; the recovery call must drop it.
+    const retryCall = sendCommandFullMock.mock.calls[2];
+    expect(retryCall[0]).toBe('navigate');
+    expect(retryCall[1]).not.toHaveProperty('page');
+  });
+
+  it('retries on a bare "Page not found:" error without the stale-identity suffix', async () => {
+    // Under concurrent adapter calls the extension can reject with just
+    // "Page not found: <id>" (no "— stale page identity" suffix) when the cached
+    // targetId was evicted. That still means the identity is dead, so goto() must
+    // drop it and retry once instead of cascading failures.
+    sendCommandFullMock
+      .mockResolvedValueOnce({ data: { url: 'https://example.com/first' }, page: 'page-1' })
+      .mockRejectedValueOnce(new Error('Page not found: deadbeef'))
+      .mockResolvedValueOnce({ data: { url: 'https://example.com/second' }, page: 'page-2' });
+
+    const page = new Page('site:youtube', undefined, undefined, undefined, 'adapter', 'persistent');
+
+    await page.goto('https://example.com/first', { waitUntil: 'none' });
+    await page.goto('https://example.com/second', { waitUntil: 'none' });
+    expect(page.getActivePage()).toBe('page-2');
+
+    expect(sendCommandFullMock).toHaveBeenCalledTimes(3);
+    const retryCall = sendCommandFullMock.mock.calls[2];
+    expect(retryCall[0]).toBe('navigate');
+    expect(retryCall[1]).not.toHaveProperty('page');
+  });
+
+  it('does not retry stale page errors when no identity was cached', async () => {
+    // _page is undefined on a fresh Page — there's nothing to drop, so propagate the
+    // error instead of silently retrying with the same params.
+    sendCommandFullMock
+      .mockRejectedValueOnce(new Error('Page not found: deadbeef — stale page identity'));
+
+    const page = new Page('site:youtube', undefined, undefined, undefined, 'adapter', 'persistent');
+
+    await expect(page.goto('https://example.com', { waitUntil: 'none' }))
+      .rejects.toThrow('stale page identity');
+    expect(sendCommandFullMock).toHaveBeenCalledTimes(1);
+  });
+
+  it('propagates non-stale navigate errors unchanged', async () => {
+    sendCommandFullMock
+      .mockResolvedValueOnce({ data: { url: 'https://example.com/first' }, page: 'page-1' })
+      .mockRejectedValueOnce(new Error('Extension disconnected'));
+
+    const page = new Page('site:youtube', undefined, undefined, undefined, 'adapter', 'persistent');
+
+    await page.goto('https://example.com/first', { waitUntil: 'none' });
+    await expect(page.goto('https://example.com/second', { waitUntil: 'none' }))
+      .rejects.toThrow('Extension disconnected');
+    // No retry for unrelated errors — exactly two navigate calls total.
+    expect(sendCommandFullMock).toHaveBeenCalledTimes(2);
+  });
+
+  it('does not retry unrelated navigate errors that only mention Page not found in details', async () => {
+    sendCommandFullMock
+      .mockResolvedValueOnce({ data: { url: 'https://example.com/first' }, page: 'page-1' })
+      .mockRejectedValueOnce(new Error('Navigation failed: upstream says Page not found: /missing'));
+
+    const page = new Page('site:youtube', undefined, undefined, undefined, 'adapter', 'persistent');
+
+    await page.goto('https://example.com/first', { waitUntil: 'none' });
+    await expect(page.goto('https://example.com/missing', { waitUntil: 'none' }))
+      .rejects.toThrow('Navigation failed');
+    expect(sendCommandFullMock).toHaveBeenCalledTimes(2);
+  });
+
   it('creates a new tab without changing the current active page binding', async () => {
     sendCommandFullMock
       .mockResolvedValueOnce({ data: { url: 'https://first.example' }, page: 'page-1' })

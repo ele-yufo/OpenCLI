@@ -39,6 +39,7 @@ opencli rednote download "https://www.rednote.com/search_result/<id>?xsec_token=
 ```
 
 > Note: `note`, `comments`, and `download` require a full signed rednote.com note URL with `xsec_token`. Bare note IDs and xhslink.com short links are not accepted because they cannot prove the rednote host/cookie identity before navigation.
+> With `comments --with-replies`, `reply_to` is the direct reply target displayed by the page. Replies without an explicit `回复 <name>` marker target the enclosing top-level comment.
 
 ## Prerequisites
 
@@ -57,4 +58,4 @@ The rednote command files are thin shims that import the DOM-extraction IIFEs an
 | Cookie root | `.xiaohongshu.com` | `.rednote.com` |
 | Search login gate | Inline `登录后查看搜索结果` text | Full-screen login modal (plus the inline text as a fallback) |
 
-`rednote feed` and `rednote notifications` cannot share the xiaohongshu intercept pipeline. rednote's `feed.feeds` is populated from SSR and the field names are camelCase (`noteCard.displayTitle`, `interactInfo.likedCount`) rather than xhs's snake_case API shape, so the xhs tap captures nothing. `notification.notificationMap[<type>].messageList` is filled by the in-page `getNotification()` action without firing a network request the tap can match. Both rednote commands therefore read the hydrated Pinia store in `func` mode, accepting both casing conventions when extracting fields. Creator-center commands (`publish`, `creator-*`) have no rednote counterpart and stay xiaohongshu-only.
+`rednote feed` reuses xiaohongshu's `runFeed` directly (it just pins the host to `www.rednote.com`): both sites hydrate a Pinia `feed` store whose entries are camelCase (`noteCard.displayTitle`, `interactInfo.likedCount`) and carry a top-level `xsecToken`, so a single `func`-mode store read serves both. `rednote notifications` stays rednote-specific because `notification.notificationMap[<type>].messageList` is filled by the in-page `getNotification()` action without firing a network request a tap could match. Creator-center commands (`publish`, `creator-*`) have no rednote counterpart and stay xiaohongshu-only.

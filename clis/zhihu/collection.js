@@ -1,19 +1,7 @@
 import { cli, Strategy } from '@jackwener/opencli/registry';
 import { ArgumentError, AuthRequiredError, CommandExecutionError, EmptyResultError } from '@jackwener/opencli/errors';
 import { log } from '@jackwener/opencli/logger';
-
-function stripHtml(html) {
-  return html
-    .replace(/<[^>]+>/g, '')
-    .replace(/&nbsp;/g, ' ')
-    .replace(/&lt;/g, '<')
-    .replace(/&gt;/g, '>')
-    .replace(/&amp;/g, '&')
-    .replace(/&quot;/g, '"')
-    .replace(/<em>/g, '')
-    .replace(/<\/em>/g, '')
-    .trim();
-}
+import { stripHtml } from './text.js';
 
 function validatePositiveInt(value, name) {
   const n = Number(value);
@@ -56,12 +44,18 @@ async function fetchCollectionPage(page, collectionId, offset, limit) {
 
 function itemKey(item) {
   const content = item?.content || {};
-  return `${content.type || 'unknown'}:${content.id || content.url || JSON.stringify(content).slice(0, 80)}`;
+  return `${content.type || ''}:${content.id || content.url || JSON.stringify(content).slice(0, 80)}`;
 }
 
 function mapCollectionItem(item, rank) {
   const content = item.content || {};
-  const type = content.type || 'unknown';
+  const type = content.type || '';
+  if (!['answer', 'article', 'pin'].includes(type)) {
+    throw new CommandExecutionError(
+      `Zhihu collection returned unsupported content type: ${type || 'missing'}`,
+      'Collection items require a supported content.type so the row identity, title, and URL are not silently blank.',
+    );
+  }
 
   let title = '';
   let excerpt = '';
@@ -90,10 +84,17 @@ function mapCollectionItem(item, rank) {
     votes = content.reaction_count || 0;
   }
 
+  if (!String(title || '').trim() || !String(url || '').trim() || url.includes('undefined')) {
+    throw new CommandExecutionError(
+      'Zhihu collection returned a malformed item without title or URL identity',
+      'Collection item rows require type, title, and URL so malformed payloads do not become blank listing rows.',
+    );
+  }
+
   return {
     rank,
     type,
-    title: title.substring(0, 100),
+    title: stripHtml(title).substring(0, 100),
     author,
     votes,
     excerpt,

@@ -1,6 +1,7 @@
 import { cli, Strategy } from '@jackwener/opencli/registry';
-import { AuthRequiredError, CommandExecutionError } from '@jackwener/opencli/errors';
+import { AuthRequiredError, CommandExecutionError, EmptyResultError } from '@jackwener/opencli/errors';
 import { TWITTER_BEARER_TOKEN } from './utils.js';
+import { describeTwitterApiError } from './shared.js';
 
 const LISTS_QUERY_ID = '78UbkyXwXBD98IgUWXOy9g';
 const OPERATION_NAME = 'ListsManagementPageTimeline';
@@ -62,14 +63,35 @@ export function extractListEntry(entry, seen) {
     };
 }
 
-export function parseListsManagement(data, seen) {
-    const lists = [];
+// X 的 ListsManagementPageTimeline 把 /<user>/lists 整个页面的所有 section
+// 都塞在同一个 TimelineAddEntries instruction 里，靠 entry.entryId 前缀区分：
+//   - `owned-subscribed-list-module-*`  → 用户的 owned + subscribed list（要保留）
+//   - `list-to-follow-module-*`         → "Discover new Lists" 算法推荐（要剔除）
+//   - `cursor-*`                         → 分页游标（无 list 数据）
+// 旧版 parser 忽略 entryId 一律下钻，导致推荐 list 被当成自建/订阅泄漏出来。
+const OWNED_SUBSCRIBED_ENTRY_PREFIX = 'owned-subscribed-list-module-';
+
+export function isOwnedSubscribedEntry(entry) {
+    return typeof entry?.entryId === 'string'
+        && entry.entryId.startsWith(OWNED_SUBSCRIBED_ENTRY_PREFIX);
+}
+
+export function getListsManagementInstructions(data) {
     const instructions = data?.data?.viewer?.list_management_timeline?.timeline?.instructions
         || data?.data?.viewer_v2?.user_results?.result?.list_management_timeline?.timeline?.instructions
         || data?.data?.list_management_timeline?.timeline?.instructions
-        || [];
+        || data?.data?.data?.viewer?.list_management_timeline?.timeline?.instructions
+        || data?.data?.data?.viewer_v2?.user_results?.result?.list_management_timeline?.timeline?.instructions
+        || data?.data?.data?.list_management_timeline?.timeline?.instructions;
+    return Array.isArray(instructions) ? instructions : null;
+}
+
+export function parseListsManagement(data, seen) {
+    const lists = [];
+    const instructions = getListsManagementInstructions(data) || [];
     for (const inst of instructions) {
         for (const entry of inst.entries || []) {
+            if (!isOwnedSubscribedEntry(entry)) continue;
             const direct = extractListEntry(entry, seen);
             if (direct) {
                 lists.push(direct);
@@ -92,7 +114,6 @@ export const command = cli({
     domain: 'x.com',
     strategy: Strategy.COOKIE,
     browser: true,
-    siteSession: 'persistent',
     args: [
         { name: 'limit', type: 'int', default: 50, help: 'Maximum number of lists to return (default 50).' },
     ],
@@ -142,10 +163,16 @@ export const command = cli({
             return r.ok ? await r.json() : { error: r.status };
         }`);
         if (data?.error) {
-            throw new CommandExecutionError(`HTTP ${data.error}: Failed to fetch lists. queryId may have expired.`);
+            throw new CommandExecutionError(describeTwitterApiError('ListsManagementPageTimeline', data.error));
         }
         const seen = new Set();
+        if (!getListsManagementInstructions(data)) {
+            throw new CommandExecutionError('Twitter lists returned an unexpected payload shape');
+        }
         const lists = parseListsManagement(data, seen);
+        if (lists.length === 0) {
+            throw new EmptyResultError('twitter lists', 'No owned or subscribed lists found');
+        }
         return lists.slice(0, limit);
     },
 });

@@ -34,10 +34,10 @@ describe('zhihu collection', () => {
             content: {
               type: 'answer',
               id: 123456,
-              question: { id: 789012, title: 'Test Question' },
+              question: { id: 789012, title: '&#34;Test&#34; &#x26; Question' },
               author: { name: 'test_author' },
               voteup_count: 42,
-              content: '<p>Test answer content</p>',
+              content: '<p>&#34;Test&#34; &#x26; answer content</p>',
               url: 'https://www.zhihu.com/question/789012/answer/123456',
             },
           },
@@ -54,9 +54,10 @@ describe('zhihu collection', () => {
     expect(result[0]).toMatchObject({
       rank: 1,
       type: 'answer',
-      title: 'Test Question',
+      title: '"Test" & Question',
       author: 'test_author',
       votes: 42,
+      excerpt: '"Test" & answer content',
       url: 'https://www.zhihu.com/question/789012/answer/123456',
     });
 
@@ -286,5 +287,51 @@ describe('zhihu collection', () => {
 
     await expect(cmd.func(page, { id: '83283292', offset: 0, limit: 20 }))
       .rejects.toBeInstanceOf(EmptyResultError);
+  });
+
+  it('fails typed for missing content.type instead of emitting a blank identity row', async () => {
+    const cmd = getRegistry().get('zhihu/collection');
+    const evaluate = vi.fn().mockResolvedValue({
+      data: [
+        {
+          content: {
+            id: 555,
+            question: { id: 666, title: 'No-type Question' },
+            author: { name: 'a' },
+            voteup_count: 1,
+            content: '<p>x</p>',
+            url: 'https://www.zhihu.com/question/666',
+          },
+        },
+      ],
+      paging: { totals: 1 },
+    });
+    const page = { goto: vi.fn().mockResolvedValue(undefined), evaluate };
+    await expect(cmd.func(page, { id: '83283292', offset: 0, limit: 20 }))
+      .rejects.toBeInstanceOf(CommandExecutionError);
+  });
+
+  it('fails typed for supported collection items missing title/url identity', async () => {
+    const cmd = getRegistry().get('zhihu/collection');
+    const page = {
+      goto: vi.fn().mockResolvedValue(undefined),
+      evaluate: vi.fn().mockResolvedValue({
+        data: [
+          {
+            content: {
+              type: 'answer',
+              id: 555,
+              question: { id: 666, title: '' },
+              author: { name: 'a' },
+              voteup_count: 1,
+              content: '<p>x</p>',
+            },
+          },
+        ],
+        paging: { totals: 1 },
+      }),
+    };
+    await expect(cmd.func(page, { id: '83283292', offset: 0, limit: 20 }))
+      .rejects.toBeInstanceOf(CommandExecutionError);
   });
 });

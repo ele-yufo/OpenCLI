@@ -1,8 +1,56 @@
-import { ArgumentError, AuthRequiredError, CommandExecutionError } from '@jackwener/opencli/errors';
+import { ArgumentError, AuthRequiredError, CommandExecutionError, EmptyResultError } from '@jackwener/opencli/errors';
 import { cli, Strategy } from '@jackwener/opencli/registry';
-import { normalizeTwitterScreenName, resolveTwitterQueryId, unwrapBrowserResult } from './shared.js';
+import { describeTwitterApiError, normalizeTwitterScreenName, resolveTwitterQueryId, unwrapBrowserResult } from './shared.js';
 import { TWITTER_BEARER_TOKEN } from './utils.js';
-const USER_BY_SCREEN_NAME_QUERY_ID = 'qRednkZG-rn1P6b48NINmQ';
+const USER_BY_SCREEN_NAME_QUERY_ID = 'IGgvgiOx4QZndDHuD3x9TQ';
+
+function isPlainObject(value) {
+    return value != null && typeof value === 'object' && !Array.isArray(value);
+}
+
+function stringField(value) {
+    return typeof value === 'string' ? value : '';
+}
+
+function countField(...values) {
+    for (const value of values) {
+        if (typeof value === 'number' && Number.isFinite(value))
+            return value;
+    }
+    return 0;
+}
+
+export function mapTwitterProfileResult(result, screenName) {
+    if (!isPlainObject(result)) {
+        throw new CommandExecutionError(`Twitter profile response for @${screenName} is malformed`);
+    }
+    const hasLegacy = isPlainObject(result.legacy);
+    const hasCore = isPlainObject(result.core);
+    if (!hasLegacy && !hasCore) {
+        throw new CommandExecutionError(`Twitter profile response for @${screenName} is missing profile fields`);
+    }
+    const legacy = hasLegacy ? result.legacy : {};
+    const core = hasCore ? result.core : {};
+    if (!stringField(core.screen_name) && !stringField(legacy.screen_name) && !stringField(core.name) && !stringField(legacy.name) && !stringField(core.created_at) && !stringField(legacy.created_at)) {
+        throw new CommandExecutionError(`Twitter profile response for @${screenName} is missing profile identity fields`);
+    }
+    const location = isPlainObject(result.location) ? result.location : {};
+    const expandedUrl = stringField(result.website?.url) || stringField(legacy.entities?.url?.urls?.[0]?.expanded_url);
+    return [{
+        screen_name: stringField(core.screen_name) || stringField(legacy.screen_name) || screenName,
+        name: stringField(core.name) || stringField(legacy.name),
+        bio: stringField(result.profile_bio?.description) || stringField(legacy.description),
+        location: stringField(location.location) || stringField(legacy.location),
+        url: stringField(expandedUrl),
+        followers: countField(result.relationship_counts?.followers, legacy.followers_count, legacy.normal_followers_count),
+        following: countField(result.relationship_counts?.following, legacy.friends_count),
+        tweets: countField(result.tweet_counts?.tweets, legacy.statuses_count),
+        likes: countField(result.action_counts?.favorites_count, legacy.favourites_count),
+        verified: Boolean(result.is_blue_verified || result.verification?.verified || legacy.verified),
+        created_at: stringField(core.created_at) || stringField(legacy.created_at),
+    }];
+}
+
 cli({
     site: 'twitter',
     name: 'profile',
@@ -11,7 +59,6 @@ cli({
     domain: 'x.com',
     strategy: Strategy.COOKIE,
     browser: true,
-    siteSession: 'persistent',
     args: [
         { name: 'username', type: 'string', positional: true, help: 'Twitter screen name (with or without @). Defaults to the logged-in user when omitted.' },
     ],
@@ -47,9 +94,9 @@ cli({
         if (!ct0)
             throw new AuthRequiredError('x.com', 'Not logged into x.com (no ct0 cookie)');
         const queryId = await resolveTwitterQueryId(page, 'UserByScreenName', USER_BY_SCREEN_NAME_QUERY_ID);
-        const result = await page.evaluate(`
+        const rawResult = unwrapBrowserResult(await page.evaluate(`
       async () => {
-        const screenName = "${username}";
+        const screenName = ${JSON.stringify(username)};
         const ct0 = ${JSON.stringify(ct0)};
 
         const bearer = ${JSON.stringify(TWITTER_BEARER_TOKEN)};
@@ -83,34 +130,53 @@ cli({
           + encodeURIComponent(variables)
           + '&features=' + encodeURIComponent(features);
 
-        const resp = await fetch(url, {headers, credentials: 'include'});
-        if (!resp.ok) return {error: 'HTTP ' + resp.status, hint: 'User may not exist or queryId expired'};
-        const d = await resp.json();
+        let resp;
+        try {
+          resp = await fetch(url, {headers, credentials: 'include'});
+        } catch (error) {
+          return {ok: false, error: 'Twitter profile request failed: ' + String(error && error.message || error)};
+        }
+        if (!resp.ok) {
+          return {
+            ok: false,
+            auth: resp.status === 401 || resp.status === 403,
+            httpStatus: resp.status,
+            error: 'HTTP ' + resp.status,
+            hint: 'User may not exist, auth may be required, or queryId expired'
+          };
+        }
+        let d;
+        try {
+          d = await resp.json();
+        } catch (error) {
+          return {ok: false, error: 'Twitter profile response was not JSON: ' + String(error && error.message || error)};
+        }
 
         const result = d.data?.user?.result;
-        if (!result) return {error: 'User @' + screenName + ' not found'};
-
-        const legacy = result.legacy || {};
-        const expandedUrl = legacy.entities?.url?.urls?.[0]?.expanded_url || '';
-
-        return [{
-          screen_name: legacy.screen_name || screenName,
-          name: legacy.name || '',
-          bio: legacy.description || '',
-          location: legacy.location || '',
-          url: expandedUrl,
-          followers: legacy.followers_count || 0,
-          following: legacy.friends_count || 0,
-          tweets: legacy.statuses_count || 0,
-          likes: legacy.favourites_count || 0,
-          verified: result.is_blue_verified || legacy.verified || false,
-          created_at: legacy.created_at || '',
-        }];
+        if (!result) return {ok: false, notFound: true, error: 'User @' + screenName + ' not found'};
+        return {ok: true, result};
       }
-    `);
-        if (result?.error) {
-            throw new CommandExecutionError(result.error + (result.hint ? ` (${result.hint})` : ''));
+    `));
+        if (!isPlainObject(rawResult)) {
+            throw new CommandExecutionError('Twitter profile response payload is malformed');
         }
-        return result || [];
+        if (!rawResult.ok) {
+            // For HTTP errors, use fork's rich code mapping (429/401/403/404/5xx differentiation
+            // from describeTwitterApiError); fall back to the plain message for non-HTTP failures
+            // (fetch threw, JSON parse failed, payload malformed).
+            const message = typeof rawResult.httpStatus === 'number'
+                ? describeTwitterApiError('UserByScreenName', rawResult.httpStatus, rawResult.hint)
+                : rawResult.error + (rawResult.hint ? ` (${rawResult.hint})` : '');
+            if (rawResult.auth) {
+                throw new AuthRequiredError('x.com', message);
+            }
+            if (rawResult.notFound) {
+                throw new EmptyResultError('twitter profile', message);
+            }
+            throw new CommandExecutionError(message);
+        }
+        return mapTwitterProfileResult(rawResult.result, username);
     }
 });
+
+export const __test__ = { mapTwitterProfileResult };

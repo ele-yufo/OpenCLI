@@ -31,6 +31,14 @@ function createPageMock(evaluateResult) {
         getCookies: vi.fn().mockResolvedValue([{ name: 'sid', value: 'secret', domain: 'www.rednote.com' }]),
     };
 }
+function createSearchPageMock(evaluateResults) {
+    const page = createPageMock(undefined);
+    page.evaluate = vi.fn();
+    for (const result of evaluateResults) {
+        page.evaluate.mockResolvedValueOnce(result);
+    }
+    return page;
+}
 
 describe('rednote note URL identity', () => {
     const download = getRegistry().get('rednote/download');
@@ -67,6 +75,40 @@ describe('rednote note URL identity', () => {
             hint: expect.stringContaining('rednote.com'),
         });
         expect(page.goto).not.toHaveBeenCalled();
+    });
+
+    it('does not leak the shared xiaohongshu authorHrefRaw transport field from comments rows', async () => {
+        const page = createPageMock({
+            loginWall: false,
+            results: [
+                { author: 'Alice', authorHrefRaw: '/user/profile/alice1', text: 'Nice', likes: 1, time: 'today', is_reply: false, reply_to: '' },
+            ],
+        });
+        const rows = await comments.func(page, {
+            'note-id': 'https://www.rednote.com/search_result/69aadbcb000000002202f131?xsec_token=abc',
+            limit: 20,
+        });
+
+        expect(rows).toEqual([
+            { rank: 1, author: 'Alice', text: 'Nice', likes: 1, time: 'today', is_reply: false, reply_to: '', images: [] },
+        ]);
+        expect(rows[0]).not.toHaveProperty('authorHrefRaw');
+    });
+
+    it('fails typed for malformed comment images instead of leaking success rows', async () => {
+        const page = createPageMock({
+            loginWall: false,
+            results: [
+                { author: 'Alice', authorHrefRaw: '/user/profile/alice1', text: 'Nice', likes: 1, time: 'today', is_reply: false, reply_to: '', images: ['blob:https://www.rednote.com/not-stable'] },
+            ],
+        });
+        await expect(comments.func(page, {
+            'note-id': 'https://www.rednote.com/search_result/69aadbcb000000002202f131?xsec_token=abc',
+            limit: 20,
+        })).rejects.toMatchObject({
+            code: 'COMMAND_EXEC',
+            message: expect.stringContaining('malformed comment row image URL'),
+        });
     });
 
     it('uses URL-scoped rednote cookies when downloading media', async () => {
@@ -127,6 +169,63 @@ describe('rednote argument validation', () => {
             message: expect.stringContaining('--type'),
         });
         expect(page.goto).not.toHaveBeenCalled();
+    });
+});
+
+describe('rednote search browser-bridge envelopes', () => {
+    const search = getRegistry().get('rednote/search');
+
+    it('unwraps login-wall wait result envelopes before auth handling', async () => {
+        const page = createSearchPageMock([
+            { session: 'site:rednote', data: 'login_wall' },
+        ]);
+
+        await expect(search.func(page, { query: 'tesla', limit: 5 })).rejects.toMatchObject({
+            code: 'AUTH_REQUIRED',
+            message: expect.stringContaining('blocked behind a login wall'),
+        });
+        expect(page.evaluate).toHaveBeenCalledTimes(1);
+    });
+
+    it('unwraps search extraction envelopes and preserves rednote row shape', async () => {
+        const url = 'https://www.rednote.com/search_result/68e90be80000000004022e66?xsec_token=test-token';
+        const page = createSearchPageMock([
+            'content',
+            1,
+            {
+                session: 'site:rednote',
+                data: [{
+                    title: 'rednote result',
+                    author: 'author',
+                    likes: '12',
+                    url,
+                    author_url: 'https://www.rednote.com/user/profile/u1',
+                }],
+            },
+        ]);
+
+        await expect(search.func(page, { query: 'tesla', limit: 1 })).resolves.toEqual([{
+            rank: 1,
+            title: 'rednote result',
+            author: 'author',
+            likes: '12',
+            published_at: '2025-10-10',
+            url,
+            author_url: 'https://www.rednote.com/user/profile/u1',
+        }]);
+    });
+
+    it('fails typed instead of silently returning [] for malformed extraction payloads', async () => {
+        const page = createSearchPageMock([
+            'content',
+            1,
+            { session: 'site:rednote', data: { rows: [] } },
+        ]);
+
+        await expect(search.func(page, { query: 'tesla', limit: 1 })).rejects.toMatchObject({
+            code: 'COMMAND_EXEC',
+            message: expect.stringContaining('payload shape'),
+        });
     });
 });
 

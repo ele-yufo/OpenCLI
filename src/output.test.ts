@@ -52,4 +52,18 @@ describe('output TTY detection', () => {
     expect(out).not.toContain('name: alice');
     expect(out).toContain('alice');
   });
+
+  it('prints single markdown payloads without wrapping them in a table', () => {
+    render([{ markdown: '# Title\n\nBody' }], { fmt: 'md' });
+    const out = logSpy.mock.calls.map((c: unknown[]) => c[0]).join('\n');
+    expect(out).toBe('# Title\n\nBody');
+    expect(out).not.toContain('| markdown |');
+  });
+
+  it('escapes pipe characters in markdown table cells', () => {
+    render([{ name: 'a|b', score: 10 }], { fmt: 'md', columns: ['name', 'score'] });
+    const out = logSpy.mock.calls.map((c: unknown[]) => c[0]).join('\n');
+
+    expect(out).toContain('| a\\|b | 10 |');
+  });
 });

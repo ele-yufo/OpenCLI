@@ -40,7 +40,7 @@ npx tsx src/main.ts <command>               # same surface, no global install
 | `UI` | Same as COOKIE, full DOM interaction. |
 | `LOCAL` | No browser; talks to a local/dev endpoint. |
 
-Electron desktop apps (cursor, codex, chatwise, notion, discord-app, doubao-app, antigravity, chatgpt-app) route through CDP against the running app — same cookie-less flow as a logged-in browser. Make sure the app is running before invoking.
+Electron desktop apps (cursor, codex, chatwise, discord-app, doubao-app, antigravity, chatgpt-app) route through CDP against the running app — same cookie-less flow as a logged-in browser. Make sure the app is running before invoking.
 
 ## Discover what's installed — don't read this file, run a command
 
@@ -53,6 +53,8 @@ opencli <site> <command> --help # see positional args and command-specific flags
 ```
 
 Do not hard-code adapter lists — there are 100+ sites and the count moves every week. `opencli list -f json` is the source of truth; it emits one entry per command with `{site, name, aliases, description, strategy, browser, args, columns, ...}`. For an agent, that is always better than grepping a doc.
+
+Before falling back to raw `opencli browser` commands on high-change authenticated sites, check whether a site adapter already exposes the workflow. For example, ChatGPT web has higher-level commands for conversation reads and Deep Research result extraction; discover the current surface with `opencli chatgpt --help` or `opencli list -f json`.
 
 ## Universal flags (work on every adapter command)
 
@@ -77,8 +79,7 @@ A few commands override the default via `cmd.defaultFormat` (e.g. chat commands 
 
 | variable | default | purpose |
 |----------|---------|---------|
-| `OPENCLI_DAEMON_PORT` | `19825` | Daemon ↔ extension bridge port. |
-| `OPENCLI_BROWSER_CONNECT_TIMEOUT` | `30` | Seconds to wait for the browser bridge. |
+| `OPENCLI_BROWSER_CONNECT_TIMEOUT` | `45` | Seconds to wait for the browser bridge. |
 | `OPENCLI_BROWSER_COMMAND_TIMEOUT` | `60` | Per-command timeout. |
 | `OPENCLI_CDP_ENDPOINT` | — | Manual CDP endpoint override (dev / remote Chrome / Electron). |
 | `OPENCLI_CACHE_DIR` | `~/.opencli/cache` | Network capture + browser-state cache. |
@@ -134,7 +135,9 @@ opencli gh pr list --limit 5   # passthrough; stdio is inherited, exit code prop
 opencli docker ps
 ```
 
-Built-in entries live in `src/external-clis.yaml`; user overrides and additions in `~/.opencli/external-clis.yaml`. Commonly shipped: `gh`, `docker`, `vercel`, `lark-cli`, `dws`, `wecom-cli`, `obsidian`, `tg`, `discord`, `wx`.
+Built-in entries live in `src/external-clis.yaml`; user overrides and additions in `~/.opencli/external-clis.yaml`. Commonly shipped: `gh`, `docker`, `vercel`, `lark-cli`, `longbridge`, `dws`, `wecom-cli`, `obsidian`, `ntn`, `tg(tg-cli)`, `discord(discord-cli)`, `wx(wx-cli)`.
+
+Some official CLIs use shell-script installers instead of a shell-free package-manager command. Entries without an `install` config, such as `ntn`, must be installed manually from their homepage before passthrough use.
 
 ## Shell completion
 

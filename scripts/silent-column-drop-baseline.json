@@ -583,13 +583,6 @@
     ]
   },
   {
-    "command": "reddit/popular",
-    "file": "clis/reddit/popular.js",
-    "missing": [
-      "author"
-    ]
-  },
-  {
     "command": "tieba/search",
     "file": "clis/tieba/search.js",
     "missing": [
@@ -610,31 +603,6 @@
     "file": "clis/twitter/bookmarks.js",
     "missing": [
       "name"
-    ]
-  },
-  {
-    "command": "twitter/download",
-    "file": "clis/twitter/download.js",
-    "missing": [
-      "poster",
-      "url"
-    ]
-  },
-  {
-    "command": "twitter/download",
-    "file": "clis/twitter/download.js",
-    "missing": [
-      "url"
-    ]
-  },
-  {
-    "command": "twitter/list-add",
-    "file": "clis/twitter/list-add.js",
-    "missing": [
-      "method",
-      "ts",
-      "url",
-      "via"
     ]
   },
   {
@@ -771,19 +739,6 @@
     "file": "clis/weread/book.js",
     "missing": [
       "url"
-    ]
-  },
-  {
-    "command": "xianyu/chat",
-    "file": "clis/xianyu/chat.js",
-    "missing": [
-      "can_input",
-      "can_send",
-      "item_url",
-      "peer_masked_id",
-      "requiresAuth",
-      "title",
-      "visible_messages"
     ]
   },
   {
@@ -943,13 +898,6 @@
     "file": "clis/zhihu/hot.js",
     "missing": [
       "url"
-    ]
-  },
-  {
-    "command": "zhihu/search",
-    "file": "clis/zhihu/search.js",
-    "missing": [
-      "excerpt"
     ]
   },
   {

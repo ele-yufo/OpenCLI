@@ -60,7 +60,7 @@ Bound sessions have no OpenCLI idle-close timer; the binding lasts until `unbind
 ## Critical rules
 
 1. **Always inspect before you act.** Run `state` or `find` first. Never hard-code a ref or selector from memory across sessions — indices are per-snapshot.
-2. **Prefer site adapters before raw browser driving.** If `opencli <site> <command>` already covers the task, use that adapter command first (`opencli facebook notifications`, `opencli reddit read`, etc.). Use `opencli browser ...` only for gaps, debugging, or one-off UI flows the adapter does not expose.
+2. **Prefer site adapters before raw browser driving.** If `opencli <site> <command>` already covers the task, use that adapter command first (`opencli facebook notifications`, `opencli reddit read`, `opencli chatgpt model <level>`, etc.). Use `opencli browser ...` only for gaps, debugging, or one-off UI flows the adapter does not expose.
 3. **Prefer numeric ref over CSS once you have it.** Numeric refs survive mild DOM shifts because the CLI fingerprints each tagged element. A CSS selector written by hand will break the first time the site re-renders.
 4. **Read `match_level` after every write.** `exact` = all good. `stable` = the element is the same but some soft attrs drifted — your action still applied. `reidentified` = the original ref was gone and the CLI found a unique replacement; double-check you hit the right element.
 5. **Use the `compound` field for form controls.** Do not regex-guess a date format, do not `state` twice to get the full `<select>` options list. The compound envelope has the format string, full option list up to 50, `options_total` for overflow, and `accept`/`multiple` for `<input type=file>`.
@@ -69,6 +69,12 @@ Bound sessions have no OpenCLI idle-close timer; the binding lasts until `unbind
 8. **Chain with `&&` when reusing freshly parsed refs.** A chained sequence runs in one shell so the ref you just read from output can be passed directly to the next command. Separate shell invocations keep the named browser session, but any shell-local variables or copied refs from the previous command can go stale after page changes.
 9. **`eval` is read-only.** Wrap the JS in an IIFE and return JSON. If you need to *change* the page, use the structured `click` / `type` / `select` / `keys` commands instead — they produce structured output and fingerprints, `eval` does not.
 10. **Prefer `network` to screen-scraping.** If a page you care about fetches its data from a JSON API, the API is almost always more reliable than scraping the rendered DOM. Capture once, inspect the shape, then `--detail <key>` the body you need.
+
+---
+
+## Sitemaps
+
+If `browser open` or `browser analyze` returns `sitemap.available: true`, switch to `opencli-browser-sitemap` before continuing a multi-step site flow. The sitemap is prior context for pages, actions, workflows, APIs, and pitfalls; it is not truth. If the browser state disagrees with the sitemap, trust the browser and mark the sitemap stale via `opencli-sitemap-author`.
 
 ---
 
@@ -433,4 +439,6 @@ normal DOM `state`, or navigate/bind directly to the iframe URL when possible.
 ## See also
 
 - `opencli-adapter-author` — turning what you just figured out into a reusable `~/.opencli/clis/<site>/<command>.js`.
+- `opencli-browser-sitemap` — consuming site sitemap context while driving a browser task.
+- `opencli-sitemap-author` — creating or updating sitemap knowledge when you discover a durable path or stale entry.
 - `opencli-autofix` — when an existing adapter breaks, this skill walks you through `--trace retain-on-failure` evidence and filing a fix.

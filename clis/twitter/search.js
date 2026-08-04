@@ -1,6 +1,6 @@
 import { ArgumentError, AuthRequiredError, CommandExecutionError } from '@jackwener/opencli/errors';
 import { cli, Strategy } from '@jackwener/opencli/registry';
-import { extractMedia, normalizeTwitterGraphqlPayload, resolveTwitterOperationMetadata } from './shared.js';
+import { extractMedia, extractCard, extractQuotedTweet, normalizeTwitterGraphqlPayload, resolveTwitterOperationMetadata, describeTwitterApiError } from './shared.js';
 import { TWITTER_BEARER_TOKEN, applyTopByEngagement } from './utils.js';
 
 // ── Public-search operator surface ─────────────────────────────────────
@@ -44,7 +44,7 @@ const PRODUCT_TO_GRAPHQL_PRODUCT = Object.freeze({
 const MAX_PAGINATION_PAGES = 100;
 
 const SEARCH_TIMELINE_OPERATION = {
-    queryId: 'VhUd6vHVmLBcw0uX-6jMLA',
+    queryId: 'Yw6L66Pw54NHKuq4Dp7b4Q',
     features: {
     rweb_video_screen_enabled: true,
     rweb_cashtags_enabled: true,
@@ -212,15 +212,19 @@ function tweetToRow(result, seen) {
     if (!tweet?.rest_id || seen.has(tweet.rest_id)) return null;
     seen.add(tweet.rest_id);
     const tweetUser = tweet.core?.user_results?.result;
+    const bio = tweetUser?.legacy?.description || '';
     return {
         id: tweet.rest_id,
-        author: tweetUser?.core?.screen_name || tweetUser?.legacy?.screen_name || 'unknown',
+        author: tweetUser?.core?.screen_name || tweetUser?.legacy?.screen_name || '',
+        bio,
         text: tweet.note_tweet?.note_tweet_results?.result?.text || tweet.legacy?.full_text || '',
         created_at: tweet.legacy?.created_at || '',
         likes: tweet.legacy?.favorite_count || 0,
         views: tweet.views?.count || '0',
         url: `https://x.com/i/status/${tweet.rest_id}`,
         ...extractMedia(tweet.legacy),
+        card: extractCard(tweet),
+        quoted_tweet: extractQuotedTweet(tweet),
     };
 }
 
@@ -261,7 +265,6 @@ cli({
     domain: 'x.com',
     strategy: Strategy.COOKIE,
     browser: true,
-    siteSession: 'persistent',
     args: [
         { name: 'query', type: 'string', required: true, positional: true, help: 'Search query. Raw X operators (e.g. "exact phrase", #tag, OR, lang:en, since:YYYY-MM-DD, from:, since:) are passed through unchanged.' },
         { name: 'filter', type: 'string', default: 'top', choices: ['top', 'live'], help: 'Legacy alias for --product. Kept for backwards compatibility; if --product is set it wins.' },
@@ -272,7 +275,7 @@ cli({
         { name: 'limit', type: 'int', default: 15, help: 'Maximum number of tweets to return (default 15). Result count after server-side filtering.' },
         { name: 'top-by-engagement', type: 'int', default: 0, help: 'When set to N>0, re-rank the results by weighted engagement (likes×1 + retweets×3 + replies×2 + bookmarks×5 + log10(views+1)×0.5) and return the top N. Default 0 keeps X\'s native ordering.' },
     ],
-    columns: ['id', 'author', 'text', 'created_at', 'likes', 'views', 'url', 'has_media', 'media_urls'],
+    columns: ['id', 'author', 'bio', 'text', 'created_at', 'likes', 'views', 'url', 'has_media', 'media_urls', 'media_posters', 'card', 'quoted_tweet'],
     func: async (page, kwargs) => {
         const finalQuery = buildSearchQuery(kwargs.query, kwargs);
         if (!finalQuery) {
@@ -315,7 +318,7 @@ cli({
         return r.ok ? await r.json() : { error: r.status };
       }`));
             if (data?.error) {
-                if (results.length === 0) throw new CommandExecutionError(`HTTP ${data.error}: SearchTimeline fetch failed — queryId may have expired`);
+                if (results.length === 0) throw new CommandExecutionError(describeTwitterApiError('SearchTimeline', data.error));
                 break;
             }
             const { rows, nextCursor } = parseSearchTimeline(data, seen);

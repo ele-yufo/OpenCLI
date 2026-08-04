@@ -9,6 +9,7 @@ const mocks = vi.hoisted(() => ({
     prepareChatGPTImagePaths: vi.fn(),
     sendChatGPTMessage: vi.fn(),
     uploadChatGPTImages: vi.fn(),
+    navigateToProject: vi.fn(),
     waitForChatGPTImages: vi.fn(),
     getChatGPTImageAssets: vi.fn(),
     saveBase64ToFile: vi.fn(),
@@ -33,6 +34,7 @@ const ASPECT_ALIASES = new Map([
 vi.mock('./utils.js', () => ({
     clearChatGPTDraft: mocks.clearChatGPTDraft,
     getChatGPTVisibleImageUrls: mocks.getChatGPTVisibleImageUrls,
+    navigateToProject: mocks.navigateToProject,
     normalizeBooleanFlag: (value, fallback = false) => {
         if (typeof value === 'boolean') return value;
         if (value == null || value === '') return fallback;
@@ -56,6 +58,12 @@ vi.mock('./utils.js', () => ({
         throw new ArgumentError(`Unsupported --aspect "${raw}"`);
     },
     sendChatGPTMessage: mocks.sendChatGPTMessage,
+    unwrapEvaluateResult: (payload) => {
+        if (payload && !Array.isArray(payload) && typeof payload === 'object' && 'session' in payload && 'data' in payload) {
+            return payload.data;
+        }
+        return payload;
+    },
     uploadChatGPTImages: mocks.uploadChatGPTImages,
     waitForChatGPTImages: mocks.waitForChatGPTImages,
     getChatGPTImageAssets: mocks.getChatGPTImageAssets,
@@ -84,6 +92,7 @@ beforeEach(() => {
     mocks.getChatGPTVisibleImageUrls.mockReset().mockResolvedValue([]);
     mocks.sendChatGPTMessage.mockReset().mockResolvedValue(true);
     mocks.uploadChatGPTImages.mockReset().mockResolvedValue({ ok: true });
+    mocks.navigateToProject.mockReset().mockResolvedValue(undefined);
     mocks.waitForChatGPTImages.mockReset().mockResolvedValue(['https://images.example/generated.png']);
     mocks.getChatGPTImageAssets.mockReset().mockResolvedValue([{
         url: 'https://images.example/generated.png',
@@ -119,6 +128,22 @@ describe('chatgpt image output paths', () => {
 });
 
 describe('chatgpt image upload flow', () => {
+    it('starts image generation inside a specified project', async () => {
+        const page = createPage();
+        await imageCommand.func(page, {
+            prompt: 'cat in a lab',
+            project: '12345678',
+            op: '',
+            sd: true,
+            timeout: 240,
+        });
+
+        expect(mocks.navigateToProject).toHaveBeenCalledWith(page, '12345678');
+        expect(page.goto).not.toHaveBeenCalled();
+        expect(mocks.clearChatGPTDraft).toHaveBeenCalled();
+        expect(mocks.sendChatGPTMessage).toHaveBeenCalledWith(page, 'Generate an image of: cat in a lab');
+    });
+
     it('uploads local images before sending an edit prompt', async () => {
         mocks.prepareChatGPTImagePaths.mockResolvedValue({ ok: true, paths: ['/abs/cat.png', '/abs/dog.jpg'] });
         await imageCommand.func(createPage(), {

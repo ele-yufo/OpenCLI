@@ -1,7 +1,7 @@
 import { cli, Strategy } from '@jackwener/opencli/registry';
 import { ArgumentError, AuthRequiredError, CommandExecutionError } from '@jackwener/opencli/errors';
 import { TWITTER_BEARER_TOKEN, applyTopByEngagement } from './utils.js';
-import { resolveTwitterQueryId } from './shared.js';
+import { extractMedia, resolveTwitterQueryId, describeTwitterApiError } from './shared.js';
 
 // Companion to bookmark-folders.js: reads tweets inside a single folder.
 // X exposes folder contents through a separate timeline operation
@@ -54,7 +54,7 @@ function buildFolderTimelineUrl(queryId, folderId, count, cursor) {
         + `&features=${encodeURIComponent(JSON.stringify(FEATURES))}`;
 }
 
-function extractFolderTweet(result, seen) {
+export function extractFolderTweet(result, seen) {
     if (!result) return null;
     const tw = result.tweet || result;
     const legacy = tw.legacy || {};
@@ -72,6 +72,7 @@ function extractFolderTweet(result, seen) {
         bookmarks: legacy.bookmark_count || 0,
         created_at: legacy.created_at || '',
         url: screenName ? `https://x.com/${screenName}/status/${tw.rest_id}` : `https://x.com/i/status/${tw.rest_id}`,
+        ...extractMedia(legacy),
     };
 }
 
@@ -123,13 +124,12 @@ cli({
     domain: 'x.com',
     strategy: Strategy.COOKIE,
     browser: true,
-    siteSession: 'persistent',
     args: [
         { name: 'folder-id', positional: true, type: 'string', required: true, help: 'Folder id from `opencli twitter bookmark-folders`.' },
         { name: 'limit', type: 'int', default: 20, help: 'Maximum number of bookmarks to return (default 20).' },
         { name: 'top-by-engagement', type: 'int', default: 0, help: 'When set to N>0, re-rank the folder by weighted engagement (likes×1 + retweets×3 + replies×2 + bookmarks×5 + log10(views+1)×0.5) and return the top N. Default 0 keeps the API\'s native (saved-time) ordering.' },
     ],
-    columns: ['id', 'author', 'text', 'likes', 'retweets', 'bookmarks', 'created_at', 'url'],
+    columns: ['id', 'author', 'text', 'likes', 'retweets', 'bookmarks', 'created_at', 'url', 'has_media', 'media_urls', 'media_posters'],
     func: async (page, kwargs) => {
         const folderId = String(kwargs['folder-id'] || '').trim();
         if (!folderId || !FOLDER_ID_PATTERN.test(folderId)) {
@@ -169,7 +169,7 @@ cli({
             }`);
             if (data?.error) {
                 if (allTweets.length === 0)
-                    throw new CommandExecutionError(`HTTP ${data.error}: Failed to fetch folder ${folderId}. queryId may have expired, or the folder may not exist.`);
+                    throw new CommandExecutionError(describeTwitterApiError('BookmarkFolderTimeline', data.error, `folder=${folderId}`));
                 break;
             }
             const { tweets, nextCursor } = parseBookmarkFolderTimeline(data, seen);
@@ -184,6 +184,7 @@ cli({
 
 export const __test__ = {
     parseBookmarkFolderTimeline,
+    extractFolderTweet,
     buildFolderTimelineUrl,
     FOLDER_ID_PATTERN,
 };

@@ -131,6 +131,17 @@ export class ArgumentError extends CliError {
   }
 }
 
+/**
+ * Thrown when a write command cannot run because another write command already
+ * holds the same persistent site session (see session-lease.ts). Uses TEMPFAIL
+ * so callers/scripts treat it as "retry later" rather than a permanent failure.
+ */
+export class SessionBusyError extends CliError {
+  constructor(message: string, hint?: string) {
+    super('SESSION_BUSY', message, hint, EXIT_CODES.TEMPFAIL);
+  }
+}
+
 export class EmptyResultError extends CliError {
   constructor(command: string, hint?: string) {
     super(
@@ -158,6 +169,40 @@ export function selectorError(selector: string, hint?: string): CliError {
 export class PluginError extends CliError {
   constructor(message: string, hint?: string) {
     super('PLUGIN', message, hint, EXIT_CODES.GENERIC_ERROR);
+  }
+}
+
+/**
+ * Thrown when a JSON endpoint returns HTML instead of JSON — typically a login
+ * wall, rate-limit page, or WAF challenge. Surfaced as a structured error so
+ * callers can show "re-login or wait out the rate limit" guidance instead of
+ * the cryptic `SyntaxError: Unexpected token '<', "<!DOCTYPE "...` that a naive
+ * JSON.parse on an HTML body produces.
+ *
+ * `bodyPreview` is the first 100 chars of the response body (after trimming
+ * leading whitespace) — useful for logs / debugging without dumping the full
+ * page.
+ */
+export class LoginWallError extends CliError {
+  readonly status: number;
+  readonly url: string;
+  readonly bodyPreview: string;
+  constructor(
+    message: string,
+    status: number,
+    url: string,
+    bodyPreview: string,
+    hint?: string,
+  ) {
+    super(
+      'LOGIN_WALL',
+      message,
+      hint ?? 'The server returned an HTML page instead of JSON — likely a login wall, rate limit, or WAF challenge. Try re-logging in via your browser, or wait a few minutes before retrying.',
+      EXIT_CODES.NOPERM,
+    );
+    this.status = status;
+    this.url = url;
+    this.bodyPreview = bodyPreview;
   }
 }
 

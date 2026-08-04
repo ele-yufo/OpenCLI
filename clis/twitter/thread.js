@@ -1,6 +1,7 @@
 import { cli, Strategy } from '@jackwener/opencli/registry';
 import { AuthRequiredError, CommandExecutionError } from '@jackwener/opencli/errors';
-import { extractMedia } from './shared.js';
+import { BROWSER_JSON_SNIFF_FN, throwIfLoginWall } from '@jackwener/opencli/utils';
+import { extractMedia, extractCard, extractQuotedTweet, describeTwitterApiError } from './shared.js';
 import { TWITTER_BEARER_TOKEN, applyTopByEngagement } from './utils.js';
 // ── Twitter GraphQL constants ──────────────────────────────────────────
 const TWEET_DETAIL_QUERY_ID = 'nBS-WpgA6ZG0CyNHD517JQ';
@@ -46,9 +47,11 @@ function extractTweet(r, seen) {
     const u = tw.core?.user_results?.result;
     const noteText = tw.note_tweet?.note_tweet_results?.result?.text;
     const screenName = u?.legacy?.screen_name || u?.core?.screen_name || 'unknown';
+    const bio = u?.legacy?.description || '';
     return {
         id: tw.rest_id,
         author: screenName,
+        bio,
         text: noteText || l.full_text || '',
         likes: l.favorite_count || 0,
         retweets: l.retweet_count || 0,
@@ -56,6 +59,8 @@ function extractTweet(r, seen) {
         created_at: l.created_at,
         url: `https://x.com/${screenName}/status/${tw.rest_id}`,
         ...extractMedia(l),
+        card: extractCard(tw),
+        quoted_tweet: extractQuotedTweet(tw),
     };
 }
 function parseTweetDetail(data, seen) {
@@ -91,6 +96,10 @@ function parseTweetDetail(data, seen) {
     }
     return { tweets, nextCursor };
 }
+
+export const __test__ = {
+    parseTweetDetail,
+};
 // ── CLI definition ────────────────────────────────────────────────────
 cli({
     site: 'twitter',
@@ -100,13 +109,12 @@ cli({
     domain: 'x.com',
     strategy: Strategy.COOKIE,
     browser: true,
-    siteSession: 'persistent',
     args: [
         { name: 'tweet-id', positional: true, type: 'string', required: true, help: 'Tweet numeric ID (e.g. 1234567890) or full status URL' },
         { name: 'limit', type: 'int', default: 50 },
         { name: 'top-by-engagement', type: 'int', default: 0, help: 'When set to N>0, re-rank the thread by weighted engagement (likes×1 + retweets×3 + replies×2 + bookmarks×5 + log10(views+1)×0.5) and return the top N. Default 0 keeps the conversation\'s structural ordering.' },
     ],
-    columns: ['id', 'author', 'text', 'likes', 'retweets', 'url', 'has_media', 'media_urls'],
+    columns: ['id', 'author', 'bio', 'text', 'likes', 'retweets', 'url', 'has_media', 'media_urls', 'media_posters', 'card', 'quoted_tweet'],
     func: async (page, kwargs) => {
         let tweetId = kwargs['tweet-id'];
         const urlMatch = tweetId.match(/\/status\/(\d+)/);
@@ -131,14 +139,16 @@ cli({
         let cursor = null;
         for (let i = 0; i < 5; i++) {
             const apiUrl = buildTweetDetailUrl(tweetId, cursor);
-            // Browser-side: just fetch + return JSON (3 lines)
-            const data = await page.evaluate(`async () => {
-        const r = await fetch("${apiUrl}", { headers: ${headers}, credentials: 'include' });
-        return r.ok ? await r.json() : { error: r.status };
-      }`);
+            // Browser-side: fetch + JSON parse with HTML-as-JSON sniffer so a
+            // login wall / WAF page surfaces as a structured LoginWallError
+            // instead of `SyntaxError: Unexpected token '<'`.
+            const data = throwIfLoginWall(await page.evaluate(`async () => {
+        ${BROWSER_JSON_SNIFF_FN}
+        return await fetchJsonOrLoginWall("${apiUrl}", { headers: ${headers}, credentials: 'include' });
+      }`), { url: apiUrl });
             if (data?.error) {
                 if (allTweets.length === 0)
-                    throw new CommandExecutionError(`HTTP ${data.error}: Tweet not found or queryId expired`);
+                    throw new CommandExecutionError(describeTwitterApiError('TweetDetail', data.error));
                 break;
             }
             // TypeScript-side: type-safe parsing + cursor extraction

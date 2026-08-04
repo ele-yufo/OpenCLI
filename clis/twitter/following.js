@@ -1,10 +1,10 @@
 import { cli, Strategy } from '@jackwener/opencli/registry';
 import { ArgumentError, AuthRequiredError, CommandExecutionError, EmptyResultError } from '@jackwener/opencli/errors';
-import { normalizeTwitterScreenName, resolveTwitterQueryId, sanitizeQueryId, unwrapBrowserResult } from './shared.js';
+import { looksLikePrivateTwitterTimeline, normalizeTwitterScreenName, resolveTwitterQueryId, sanitizeQueryId, unwrapBrowserResult, describeTwitterApiError } from './shared.js';
 import { TWITTER_BEARER_TOKEN } from './utils.js';
 
-const FOLLOWING_QUERY_ID = 'zx6e-TLzRkeDO_a7p4b3JQ';  // Following fallback
-const USER_BY_SCREEN_NAME_QUERY_ID = 'qRednkZG-rn1P6b48NINmQ';
+const FOLLOWING_QUERY_ID = 'F42cDX8PDFxkbjjq6JrM2w';
+const USER_BY_SCREEN_NAME_QUERY_ID = 'IGgvgiOx4QZndDHuD3x9TQ';
 const MAX_PAGINATION_PAGES = 100;
 
 const FEATURES = {
@@ -90,9 +90,13 @@ function extractUser(result) {
         return null;
     const core = result.core || {};
     const legacy = result.legacy || {};
+    const screenName = core.screen_name || legacy.screen_name || '';
+    if (!screenName) {
+        throw new CommandExecutionError('Malformed Twitter following user: missing screen_name');
+    }
     return {
-        screen_name: core.screen_name || legacy.screen_name || 'unknown',
-        name: core.name || legacy.name || 'unknown',
+        screen_name: screenName,
+        name: core.name || legacy.name || '',
         bio: legacy.description || result.profile_bio?.description || '',
         followers: legacy.followers_count || legacy.normal_followers_count || 0,
     };
@@ -140,7 +144,6 @@ cli({
     domain: 'x.com',
     strategy: Strategy.COOKIE,
     browser: true,
-    siteSession: 'persistent',
     args: [
         {
             name: 'user',
@@ -222,6 +225,7 @@ cli({
         const allUsers = [];
         const seen = new Set();
         let cursor = null;
+        let lastRawResponse = null;
 
         // Runaway guard only; --limit and cursor exhaustion control normal pagination.
         for (let i = 0; i < MAX_PAGINATION_PAGES && allUsers.length < limit; i++) {
@@ -234,8 +238,9 @@ cli({
             if (data?.error) {
                 if (data.error === 401 || data.error === 403)
                     throw new AuthRequiredError('x.com', `Twitter following request failed (HTTP ${data.error})`);
-                throw new CommandExecutionError(`HTTP ${data.error}: Failed to fetch following list. queryId may have expired.`);
+                throw new CommandExecutionError(describeTwitterApiError('Following', data.error));
             }
+            lastRawResponse = data;
             const { users, nextCursor } = parseFollowing(data);
             for (const u of users) {
                 if (!seen.has(u.screen_name)) {
@@ -249,6 +254,9 @@ cli({
         }
 
         if (allUsers.length === 0) {
+            if (looksLikePrivateTwitterTimeline(lastRawResponse)) {
+                throw new EmptyResultError('twitter following', `No following data returned for @${targetUser} (the target account may have set their following list to private)`);
+            }
             throw new EmptyResultError('twitter following', `No following accounts found for @${targetUser}`);
         }
 

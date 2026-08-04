@@ -1,6 +1,6 @@
 import { AuthRequiredError, CommandExecutionError } from '@jackwener/opencli/errors';
 import { cli, Strategy } from '@jackwener/opencli/registry';
-import { resolveTwitterQueryId, extractMedia } from './shared.js';
+import { resolveTwitterQueryId, extractMedia, extractCard, extractQuotedTweet, describeTwitterApiError } from './shared.js';
 import { TWITTER_BEARER_TOKEN, applyTopByEngagement } from './utils.js';
 // ── Twitter GraphQL constants ──────────────────────────────────────────
 const HOME_TIMELINE_QUERY_ID = 'c-CzHF1LboFilMpsx4ZCrQ';
@@ -74,11 +74,13 @@ function extractTweet(result, seen) {
     seen.add(tw.rest_id);
     const u = tw.core?.user_results?.result;
     const screenName = u?.legacy?.screen_name || u?.core?.screen_name || 'unknown';
+    const bio = u?.legacy?.description || '';
     const noteText = tw.note_tweet?.note_tweet_results?.result?.text;
     const views = tw.views?.count ? parseInt(tw.views.count, 10) : 0;
     return {
         id: tw.rest_id,
         author: screenName,
+        bio,
         text: noteText || l.full_text || '',
         likes: l.favorite_count || 0,
         retweets: l.retweet_count || 0,
@@ -87,6 +89,8 @@ function extractTweet(result, seen) {
         created_at: l.created_at || '',
         url: `https://x.com/${screenName}/status/${tw.rest_id}`,
         ...extractMedia(l),
+        card: extractCard(tw),
+        quoted_tweet: extractQuotedTweet(tw),
     };
 }
 function parseHomeTimeline(data, seen) {
@@ -142,7 +146,6 @@ cli({
     domain: 'x.com',
     strategy: Strategy.COOKIE,
     browser: true,
-    siteSession: 'persistent',
     args: [
         {
             name: 'type',
@@ -153,7 +156,7 @@ cli({
         { name: 'limit', type: 'int', default: 20, help: 'Maximum number of tweets to return (default 20).' },
         { name: 'top-by-engagement', type: 'int', default: 0, help: 'When set to N>0, re-rank the timeline by weighted engagement (likes×1 + retweets×3 + replies×2 + bookmarks×5 + log10(views+1)×0.5) and return the top N. Default 0 keeps X\'s native ordering.' },
     ],
-    columns: ['id', 'author', 'text', 'likes', 'retweets', 'replies', 'views', 'created_at', 'url', 'has_media', 'media_urls'],
+    columns: ['id', 'author', 'bio', 'text', 'likes', 'retweets', 'replies', 'views', 'created_at', 'url', 'has_media', 'media_urls', 'media_posters', 'card', 'quoted_tweet'],
     func: async (page, kwargs) => {
         const limit = kwargs.limit || 20;
         const timelineType = kwargs.type === 'following' ? 'following' : 'for-you';
@@ -188,7 +191,7 @@ cli({
       }`);
             if (data?.error) {
                 if (allTweets.length === 0)
-                    throw new CommandExecutionError(`HTTP ${data.error}: Failed to fetch timeline. queryId may have expired.`);
+                    throw new CommandExecutionError(describeTwitterApiError(endpoint, data.error));
                 break;
             }
             const { tweets, nextCursor } = parseHomeTimeline(data, seen);
