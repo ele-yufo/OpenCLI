@@ -6443,6 +6443,18 @@
         "default": 240,
         "required": false,
         "help": "Max seconds for the overall command (default: 240)"
+      },
+      {
+        "name": "conv",
+        "type": "str",
+        "required": false,
+        "help": "Continue an existing conversation by id or /c/<id> URL (default: start a new conversation)"
+      },
+      {
+        "name": "aspect",
+        "type": "str",
+        "required": false,
+        "help": "Image aspect ratio: auto, 1:1, 3:4, 9:16, 4:3, 16:9 (aliases: square, portrait, story, landscape, widescreen). Default: auto"
       }
     ],
     "columns": [
