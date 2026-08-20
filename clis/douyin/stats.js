@@ -2,9 +2,9 @@ import { cli, Strategy } from '@jackwener/opencli/registry';
 import { ArgumentError, EmptyResultError } from '@jackwener/opencli/errors';
 import { browserFetch } from './_shared/browser-fetch.js';
 
-// The creator item list carries the full per-work metric set (play/completion/
-// bounce/cover/fan metrics) that the retired item_analysis/metrics_trend endpoint
-// used to expose. It is cursor-paginated the same way work_list is.
+// The creator item list is where the per-work metric set lives: play, completion,
+// 2s bounce, cover impressions/CTR, fan-vs-visitor split and follow conversion,
+// 26 fields in total. It is cursor-paginated the same way work_list is.
 const ITEM_LIST_URL = 'https://creator.douyin.com/web/api/creator/item/list';
 const PAGE_SIZE = 50;
 const MAX_HOPS = 50;
