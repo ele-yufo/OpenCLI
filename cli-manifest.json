@@ -3584,9 +3584,9 @@
   {
     "site": "bilibili",
     "name": "creator-stats",
-    "description": "读取本人稿件的创作诊断、转粉和留存原始指标（需登录创作中心）",
+    "description": "读取当前账号最近稿件的核心创作指标（需登录创作中心）",
     "access": "read",
-    "example": "opencli bilibili creator-stats <owned-bvid> -f json",
+    "example": "opencli bilibili creator-stats <bvid-or-video-url> -f json",
     "domain": "member.bilibili.com",
     "strategy": "cookie",
     "browser": true,
@@ -3596,11 +3596,11 @@
         "type": "string",
         "required": true,
         "positional": true,
-        "help": "本人稿件 BV ID"
+        "help": "Exact case-sensitive BV ID or bilibili.com video URL"
       }
     ],
     "columns": [
-      "source",
+      "bvid",
       "metric",
       "value",
       "unit"
