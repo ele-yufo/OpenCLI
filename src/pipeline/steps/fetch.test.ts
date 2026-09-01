@@ -27,6 +27,25 @@ describe('stepFetch', () => {
     expect(jsonMock).not.toHaveBeenCalled();
   });
 
+  // A truncated response body (slow/flaky connection) makes resp.json() throw a raw
+  // SyntaxError; it must surface as a coded FETCH_ERROR, not an uncoded UNKNOWN error.
+  it('throws CliError with FETCH_ERROR code when the response body fails to parse as JSON', async () => {
+    const fetchMock = vi.fn().mockResolvedValue({
+      ok: true,
+      status: 200,
+      statusText: 'OK',
+      json: vi.fn().mockRejectedValue(new SyntaxError('Unexpected end of JSON input')),
+    });
+    vi.stubGlobal('fetch', fetchMock);
+
+    const err = await stepFetch(null, { url: 'https://api.example.com/items' }, null, {}).catch((e: unknown) => e);
+    expect(err).toBeInstanceOf(CliError);
+    expect((err as CliError).code).toBe('FETCH_ERROR');
+    expect((err as CliError).message).toBe(
+      'Failed to parse JSON response from https://api.example.com/items: Unexpected end of JSON input',
+    );
+  });
+
   // W1 + W3: browser single fetch delegates to page.fetchJson, which owns browser-context fetch errors
   it('throws CliError with FETCH_ERROR code on non-ok responses inside the browser session', async () => {
     const page = {

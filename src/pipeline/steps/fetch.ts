@@ -33,7 +33,14 @@ async function fetchSingle(
     if (!resp.ok) {
       throw new CliError('FETCH_ERROR', `HTTP ${resp.status} ${resp.statusText} from ${finalUrl}`);
     }
-    return resp.json();
+    try {
+      return await resp.json();
+    } catch (error) {
+      // A truncated/interrupted response body (slow or flaky connection) makes
+      // resp.json() throw a raw SyntaxError. Surface it as FETCH_ERROR like the
+      // HTTP-status branch above, instead of leaking an uncoded parse error.
+      throw new CliError('FETCH_ERROR', `Failed to parse JSON response from ${finalUrl}: ${getErrorMessage(error)}`);
+    }
   }
 
   return page.fetchJson(finalUrl, { method: method.toUpperCase(), headers: renderedHeaders });
