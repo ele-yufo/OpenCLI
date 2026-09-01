@@ -35,6 +35,15 @@ function isExpectedGoogleRestriction(code: number, stderr: string): boolean {
   return /fetch failed/.test(stderr) || /Error \[FETCH_ERROR\]: HTTP (403|429|451|503)\b/.test(stderr);
 }
 
+function isExpectedAlgoliaHnRestriction(code: number, stderr: string): boolean {
+  if (code === 0) return false;
+  // hn.algolia.com (search only — other hackernews commands hit the more
+  // reliable Firebase-backed HN API) is a third-party Algolia-hosted search
+  // index with occasional outages independent of CI. Confirmed live 500s
+  // from outside CI on 2026-09-01: "Server Error... try again in 30 seconds".
+  return /code:\s*FETCH_ERROR/.test(stderr) && /HTTP 5\d\d\b/.test(stderr);
+}
+
 function isExpectedDictionaryApiRestriction(code: number, stderr: string): boolean {
   if (code === 0) return false;
   // api.dictionaryapi.dev is a shared free API with no auth/SLA. CI runners
@@ -203,11 +212,16 @@ describe('public commands E2E', () => {
     expect(Array.isArray(data)).toBe(true);
     expect(data.length).toBeGreaterThanOrEqual(1);
     expect(data[0]).toHaveProperty('title');
-    expect(data[0]).toHaveProperty('url');
+    // `url` isn't asserted: HN job stories are frequently text-only posts
+    // (body + inline contact link) with no top-level `url` field — confirmed
+    // against live data on 2026-09-01. `author` (item.by) is always present.
+    expect(data[0]).toHaveProperty('author');
   }, 30_000);
 
   it('hackernews search returns results for query', async () => {
-    const { stdout, code } = await runCli(['hackernews', 'search', 'typescript', '--limit', '3', '-f', 'json']);
+    const { stdout, stderr, code } = await runCli(['hackernews', 'search', 'typescript', '--limit', '3', '-f', 'json']);
+    if (code !== 0) console.warn(`hackernews search: code=${code} stderr=${stderr.slice(0, 500)}`);
+    if (isExpectedAlgoliaHnRestriction(code, stderr)) return;
     expect(code).toBe(0);
     const data = parseJsonOutput(stdout);
     expect(Array.isArray(data)).toBe(true);
