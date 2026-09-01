@@ -40,7 +40,9 @@ function isExpectedDictionaryApiRestriction(code: number, stderr: string): boole
   // api.dictionaryapi.dev is a shared free API with no auth/SLA. CI runners
   // can hit rate limits, transient 5xx, or a slow response for large entries
   // (e.g. "perfect") that gets killed with no stderr before it completes.
-  return /Error \[(FETCH_ERROR|NOT_FOUND)\]/.test(stderr)
+  // Errors render as a YAML envelope ("error:\n  code: FETCH_ERROR\n..."), not
+  // the "Error [CODE]: ..." bracket form other predicates in this file assume.
+  return /code:\s*(FETCH_ERROR|NOT_FOUND)/.test(stderr)
     || /fetch failed/.test(stderr)
     || stderr.trim() === '';
 }
@@ -503,10 +505,8 @@ describe('public commands E2E', () => {
   // ── dictionary (public API, browser: false) ──
   it('dictionary search returns word definitions', async () => {
     const { stdout, stderr, code } = await runCli(['dictionary', 'search', 'serendipity', '-f', 'json']);
-    if (isExpectedDictionaryApiRestriction(code, stderr)) {
-      console.warn(`dictionary search skipped: ${stderr.trim()}`);
-      return;
-    }
+    if (code !== 0) console.warn(`dictionary search: code=${code} stderr=${stderr.slice(0, 500)}`);
+    if (isExpectedDictionaryApiRestriction(code, stderr)) return;
     expect(code).toBe(0);
     const data = parseJsonOutput(stdout);
     expect(Array.isArray(data)).toBe(true);
@@ -518,10 +518,8 @@ describe('public commands E2E', () => {
 
   it('dictionary synonyms returns synonyms', async () => {
     const { stdout, stderr, code } = await runCli(['dictionary', 'synonyms', 'serendipity', '-f', 'json']);
-    if (isExpectedDictionaryApiRestriction(code, stderr)) {
-      console.warn(`dictionary synonyms skipped: ${stderr.trim()}`);
-      return;
-    }
+    if (code !== 0) console.warn(`dictionary synonyms: code=${code} stderr=${stderr.slice(0, 500)}`);
+    if (isExpectedDictionaryApiRestriction(code, stderr)) return;
     expect(code).toBe(0);
     const data = parseJsonOutput(stdout);
     expect(Array.isArray(data)).toBe(true);
@@ -532,10 +530,8 @@ describe('public commands E2E', () => {
 
   it('dictionary examples returns examples', async () => {
     const { stdout, stderr, code } = await runCli(['dictionary', 'examples', 'perfect', '-f', 'json']);
-    if (isExpectedDictionaryApiRestriction(code, stderr)) {
-      console.warn(`dictionary examples skipped: ${stderr.trim()}`);
-      return;
-    }
+    if (code !== 0) console.warn(`dictionary examples: code=${code} stderr=${stderr.slice(0, 500)}`);
+    if (isExpectedDictionaryApiRestriction(code, stderr)) return;
     expect(code).toBe(0);
     const data = parseJsonOutput(stdout);
     expect(Array.isArray(data)).toBe(true);
