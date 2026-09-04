@@ -97,11 +97,13 @@ describe('plugin management E2E', () => {
   it('plugin update succeeds on an installed plugin', async () => {
     // updatePlugin() re-clones the source and re-runs the npm install
     // lifecycle (see updatePlugin/postInstallLifecycle in src/plugin.ts) —
-    // the same cost as `plugin install` above, which needs up to ~180s of
-    // headroom. This test's old 30s budget was tighter still and timed out
-    // in CI on 2026-09-04 (both runners, same run).
+    // the same class of work as `plugin install` above, but observed to run
+    // even longer: still timed out at a 180s budget on a macos-15 CI runner
+    // on 2026-09-04 after `plugin install`'s own 180s budget had already
+    // proven sufficient in the same run. Give real margin above the worst
+    // case actually observed rather than incrementally chasing the ceiling.
     const { stdout, code } = await runPluginCli(['plugin', 'update', PLUGIN_NAME], {
-      timeout: 180_000,
+      timeout: 300_000,
     });
     expect(code).toBe(0);
     expect(stdout).toContain('updated successfully');
@@ -109,7 +111,7 @@ describe('plugin management E2E', () => {
     // Verify lock file has updatedAt
     const lock = JSON.parse(fs.readFileSync(LOCK_FILE, 'utf-8'));
     expect(lock[PLUGIN_NAME].updatedAt).toBeTruthy();
-  }, 180_000);
+  }, 300_000);
 
   // ── plugin uninstall ──
   it('plugin uninstall removes the plugin', async () => {
