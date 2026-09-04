@@ -4,10 +4,27 @@
  */
 
 import { describe, expect, it } from 'vitest';
+import { load } from 'js-yaml';
 import * as fs from 'node:fs/promises';
 import * as os from 'node:os';
 import * as path from 'node:path';
 import { parseJsonOutput, runCli } from './helpers.js';
+
+function isExpectedDictionaryOutage(code: number, stderr: string): boolean {
+  if (code === 0) return false;
+  // Only accept a concrete transport failure or a temporary HTTP response from
+  // the dictionary service. Empty output, bad JSON and missing words stay red.
+  try {
+    const envelope = load(stderr) as { error?: { code?: string; message?: string } } | null;
+    const error = envelope?.error;
+    if (!error || typeof error.message !== 'string') return false;
+    if (error.code === 'UNKNOWN' && error.message === 'fetch failed') return true;
+    return error.code === 'FETCH_ERROR'
+      && /^HTTP (?:429|5\d{2})\b[^\n]* from https:\/\/api\.dictionaryapi\.dev\//.test(error.message);
+  } catch {
+    return false;
+  }
+}
 
 function isExpectedChineseSiteRestriction(code: number, stderr: string): boolean {
   if (code === 0) return false;
@@ -39,6 +56,30 @@ function isExpectedGoogleRestriction(code: number, stderr: string): boolean {
 const isExpectedXiaoyuzhouRestriction = isExpectedChineseSiteRestriction;
 
 describe('public command restriction detectors', () => {
+  it.each([
+    ['UNKNOWN', 'fetch failed'],
+    ['FETCH_ERROR', 'HTTP 429 Too Many Requests from https://api.dictionaryapi.dev/api/v2/entries/en/perfect'],
+    ['FETCH_ERROR', 'HTTP 503 Service Unavailable from https://api.dictionaryapi.dev/api/v2/entries/en/perfect'],
+  ])('recognizes a dictionary outage: %s / %s', (code, message) => {
+    expect(isExpectedDictionaryOutage(1, `error:\n  code: ${code}\n  message: ${message}\n`)).toBe(true);
+  });
+
+  it.each([
+    '',
+    'not a CLI error envelope',
+    'error:\n  code: UNKNOWN\n  message: Unexpected token in JSON\n',
+    'error:\n  code: FETCH_ERROR\n  message: HTTP 404 Not Found from https://api.dictionaryapi.dev/api/v2/entries/en/perfect\n',
+    'error:\n  code: FETCH_ERROR\n  message: HTTP 403 Forbidden from https://api.dictionaryapi.dev/api/v2/entries/en/perfect\n',
+    'error:\n  code: FETCH_ERROR\n  message: HTTP 503 Service Unavailable from https://other.example/perfect\n',
+    'error:\n  code: ARGUMENT\n  message: Invalid word\n',
+  ])('does not hide a dictionary regression: %s', (stderr) => {
+    expect(isExpectedDictionaryOutage(1, stderr)).toBe(false);
+  });
+
+  it('never skips successful dictionary output', () => {
+    expect(isExpectedDictionaryOutage(0, 'error:\n  code: UNKNOWN\n  message: fetch failed\n')).toBe(false);
+  });
+
   it('treats current Apple Podcasts CliError rendering as an expected restriction', () => {
     expect(
       isExpectedApplePodcastsRestriction(
@@ -491,9 +532,10 @@ describe('public commands E2E', () => {
   }, 30_000);
 
   // ── dictionary (public API, browser: false) ──
-  it('dictionary search returns word definitions', async () => {
-    const { stdout, code } = await runCli(['dictionary', 'search', 'serendipity', '-f', 'json']);
-    expect(code).toBe(0);
+  it('dictionary search returns word definitions', async (ctx) => {
+    const { stdout, stderr, code } = await runCli(['dictionary', 'search', 'serendipity', '-f', 'json']);
+    if (isExpectedDictionaryOutage(code, stderr)) ctx.skip(`Dictionary API unavailable: ${stderr.trim()}`);
+    expect(code, stderr).toBe(0);
     const data = parseJsonOutput(stdout);
     expect(Array.isArray(data)).toBe(true);
     expect(data.length).toBeGreaterThanOrEqual(1);
@@ -502,9 +544,10 @@ describe('public commands E2E', () => {
     expect(data[0]).toHaveProperty('definition');
   }, 30_000);
 
-  it('dictionary synonyms returns synonyms', async () => {
-    const { stdout, code } = await runCli(['dictionary', 'synonyms', 'serendipity', '-f', 'json']);
-    expect(code).toBe(0);
+  it('dictionary synonyms returns synonyms', async (ctx) => {
+    const { stdout, stderr, code } = await runCli(['dictionary', 'synonyms', 'serendipity', '-f', 'json']);
+    if (isExpectedDictionaryOutage(code, stderr)) ctx.skip(`Dictionary API unavailable: ${stderr.trim()}`);
+    expect(code, stderr).toBe(0);
     const data = parseJsonOutput(stdout);
     expect(Array.isArray(data)).toBe(true);
     expect(data.length).toBeGreaterThanOrEqual(1);
@@ -512,9 +555,10 @@ describe('public commands E2E', () => {
     expect(data[0]).toHaveProperty('synonyms');
   }, 30_000);
 
-  it('dictionary examples returns examples', async () => {
-    const { stdout, code } = await runCli(['dictionary', 'examples', 'perfect', '-f', 'json']);
-    expect(code).toBe(0);
+  it('dictionary examples returns examples', async (ctx) => {
+    const { stdout, stderr, code } = await runCli(['dictionary', 'examples', 'perfect', '-f', 'json']);
+    if (isExpectedDictionaryOutage(code, stderr)) ctx.skip(`Dictionary API unavailable: ${stderr.trim()}`);
+    expect(code, stderr).toBe(0);
     const data = parseJsonOutput(stdout);
     expect(Array.isArray(data)).toBe(true);
     expect(data.length).toBeGreaterThanOrEqual(1);

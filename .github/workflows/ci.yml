@@ -38,6 +38,15 @@ jobs:
       - name: Build
         run: npm run build
 
+      # These checks use only local Git/npm fixtures and error envelopes, so
+      # they can guard PRs without launching Chrome or calling external APIs.
+      - name: Check offline E2E contracts
+        run: >-
+          npx vitest run --project e2e
+          tests/e2e/plugin-management.test.ts tests/e2e/public-commands.test.ts
+          -t "plugin management E2E|public command restriction detectors"
+          --reporter=verbose
+
       # Guard: committed cli-manifest.json must match the one build regenerates.
       # Prevents silent drift where unrelated adapter entries vanish or change
       # across PRs (agent hits unexpected manifest diff → surgical-merge churn).
