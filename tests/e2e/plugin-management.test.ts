@@ -46,8 +46,14 @@ describe('plugin management E2E', () => {
 
   // ── plugin install ──
   it('plugin install clones and sets up a real plugin', async () => {
+    // git clone + npm install of a real external repo has high, genuine
+    // variance under normal (not even degraded) conditions — confirmed
+    // locally on 2026-09-04 across repeat runs at ~60s, ~65s, and ~110s. The
+    // old 60s budget had zero margin over even the fast end of that range,
+    // which is what made this test time out on both CI runners in the same
+    // run. Give it real headroom instead of a 1x-tight budget.
     const { stdout, code } = await runPluginCli(['plugin', 'install', PLUGIN_SOURCE], {
-      timeout: 60_000,
+      timeout: 180_000,
     });
     expect(code).toBe(0);
     expect(stdout).toContain('installed successfully');
@@ -65,7 +71,7 @@ describe('plugin management E2E', () => {
     });
     expect(lock[PLUGIN_NAME].source.url).toContain('opencli-plugin-hot-digest');
     expect(lock[PLUGIN_NAME].installedAt).toBeTruthy();
-  }, 60_000);
+  }, 180_000);
 
   // ── plugin list (after install) ──
   it('plugin list shows the installed plugin', async () => {
