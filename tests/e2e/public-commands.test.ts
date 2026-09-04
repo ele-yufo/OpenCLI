@@ -16,9 +16,10 @@ function isExpectedChineseSiteRestriction(code: number, stderr: string): boolean
   // without surfacing a useful stderr payload.
   // Exit code 78 (CONFIG_ERROR) covers adapters that migrated to authenticated
   // APIs — credentials won't be available in CI.
-  return /Error \[(FETCH_ERROR|PARSE_ERROR|NOT_FOUND)\]/.test(stderr)
+  // Errors render as a YAML envelope ("error:\n  code: FETCH_ERROR\n..."), not
+  // an "Error [CODE]: ..." bracket string — match the actual "code: X" field.
+  return /code:\s*(FETCH_ERROR|PARSE_ERROR|NOT_FOUND|CONFIG)/.test(stderr)
     || /fetch failed/.test(stderr)
-    || /code: CONFIG/.test(stderr)
     || code === 78
     || stderr.trim() === '';
 }
@@ -31,8 +32,11 @@ function isExpectedApplePodcastsRestriction(code: number, stderr: string): boole
 
 function isExpectedGoogleRestriction(code: number, stderr: string): boolean {
   if (code === 0) return false;
-  // Network unreachable (DNS/proxy) or HTTP error from Google
-  return /fetch failed/.test(stderr) || /Error \[FETCH_ERROR\]: HTTP (403|429|451|503)\b/.test(stderr);
+  // Network unreachable (DNS/proxy) or HTTP error from Google. Same YAML
+  // envelope format as isExpectedChineseSiteRestriction above — matched on
+  // "code: FETCH_ERROR" rather than a nonexistent "Error [FETCH_ERROR]: " prefix.
+  return /fetch failed/.test(stderr)
+    || (/code:\s*FETCH_ERROR/.test(stderr) && /HTTP (403|429|451|503)\b/.test(stderr));
 }
 
 function isExpectedAlgoliaHnRestriction(code: number, stderr: string): boolean {
