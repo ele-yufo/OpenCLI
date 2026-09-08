@@ -20,13 +20,18 @@ const clips = () => ids.map(id => ({ id, title: 'Native title', status: 'complet
 
 // Browser-shaped fixture executes the production DOM reads, form preparation,
 // click/capture orchestration and title persistence, without a paid request.
-function browser({ model = 'v5.5', capture = true, body, entry = {}, challenge = false, noRows = false, clickError = false, saveTitle = true, saveServerTitle = true, covered = false } = {}) {
+function browser({ model = 'v5.5', capture = true, body, entry = {}, challenge = false, noRows = false, clickError = false, saveTitle = true, saveServerTitle = true, covered = false, emptyForm = false } = {}) {
     const dom = new JSDOM(`<button role="tab" aria-label="Simple" aria-selected="false"></button>
       <textarea maxlength="3000">previous prompt</textarea>
       <button aria-label="Clear all form inputs"></button>
       <button aria-label="Check this to generate an instrumental only song"><svg class="text-pink-500"></svg></button>
       <button aria-haspopup="menu">${model}</button><button aria-label="Create song"></button><main></main>`, { runScripts: 'outside-only', url: 'https://suno.com/create' });
     const w = dom.window;
+    if (emptyForm) {
+        w.document.querySelector('textarea').value = '';
+        w.document.querySelector('button[aria-label="Clear all form inputs"]').disabled = true;
+        w.document.querySelector('svg').setAttribute('class', 'text-background-tertiary');
+    }
     Object.defineProperty(w.HTMLElement.prototype, 'innerText', { get() { return this.textContent; } });
     w.Element.prototype.getClientRects = function () { return this.hidden ? [] : [{}]; };
     w.Element.prototype.getBoundingClientRect = () => ({ left: 0, top: 0, width: 300, height: 80 });
@@ -131,6 +136,13 @@ describe('Suno native Create fallback', () => {
         await generateCommand.func(page, { ...options, sd: false, formats: 'metadata' });
         expect(mocks.download).toHaveBeenCalledTimes(2);
         expect(mocks.download.mock.calls.map(([, clip]) => clip.id)).toEqual(ids);
+        expect(createClicks(page)).toHaveLength(1);
+    });
+    it('skips the disabled clear button on an already empty form', async () => {
+        const page = browser({ emptyForm: true });
+        const rows = await generateCommand.func(page, options);
+        expect(rows).toHaveLength(2);
+        expect(page.click.mock.calls.some(([s]) => s.includes('Clear all'))).toBe(false);
         expect(createClicks(page)).toHaveLength(1);
     });
     it.each([{ model: 'chirp-bluejay' }, { weirdness: 0.8 }, { styleWeight: 0.8 }, { mode: 'custom' }])('rejects unmapped parameters before navigation: %j', async changed => {

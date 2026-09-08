@@ -94,7 +94,7 @@ async function nativeState(page) {
             prompt: document.querySelector(${JSON.stringify(SIMPLE_PROMPT)})?.value,
             instrumental: iconClass.includes('text-pink-500') ? true : iconClass.includes('text-background-tertiary') ? false : null,
             models: Array.from(document.querySelectorAll('button[aria-haspopup="menu"]')).filter(e => visible(e) && /^v[0-9]/.test(e.innerText.trim())).map(e => e.innerText.trim()),
-            clear: !!document.querySelector('button[aria-label="Clear all form inputs"]'),
+            clear: document.querySelector('button[aria-label="Clear all form inputs"]')?.disabled === false,
             enabled: document.querySelector(${JSON.stringify(CREATE)})?.disabled === false,
             ids: Array.from(document.querySelectorAll('[data-testid="clip-row"] a[href^="/song/"]')).map(e => e.getAttribute('href').split('/').pop()),
             manualChallenge: Array.from(document.querySelectorAll('iframe')).some(e => {
