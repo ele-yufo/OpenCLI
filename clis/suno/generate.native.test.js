@@ -126,6 +126,15 @@ beforeEach(() => {
 afterEach(() => vi.useRealTimers());
 
 describe('Suno native Create fallback', () => {
+    it('uses the same native path with --via-ui when verification is not required', async () => {
+        mocks.captcha.mockResolvedValue({ ok: true, required: false });
+        const page = browser();
+        const rows = await generateCommand.func(page, { ...options, 'via-ui': true });
+        expect(rows).toHaveLength(2);
+        expect(createClicks(page)).toHaveLength(1);
+        expect(mocks.submit).not.toHaveBeenCalled();
+        expect(mocks.poll).toHaveBeenCalledTimes(2);
+    });
     it('runs the production required=true path, binds results, saves titles, and never POSTs via the old API', async () => {
         const page = browser();
         const rows = await generateCommand.func(page, options);

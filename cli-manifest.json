@@ -37158,6 +37158,13 @@
         "help": "Skip download; only print clip ids and Suno URLs"
       },
       {
+        "name": "via-ui",
+        "type": "boolean",
+        "default": false,
+        "required": false,
+        "help": "Use the official Simple/V5.5 Create form even when webpage verification is not required"
+      },
+      {
         "name": "confirm-paid",
         "type": "boolean",
         "default": false,

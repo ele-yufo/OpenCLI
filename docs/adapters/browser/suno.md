@@ -63,6 +63,7 @@ opencli suno download a1b2c3d4-1111-2222-3333-444444444444 \
 | `--style-weight` | `generate` | Style adherence slider, `0..1` (default: `0.5`) |
 | `--timeout` | `generate` | Max seconds to wait for both clips to finish (default: `300`) |
 | `--sd` | `generate` | Skip download; only print clip ids and Suno URLs |
+| `--via-ui` | `generate` | Explicitly use the official Simple/V5.5/default-slider Create form, even if verification is not currently required. Uses the same single-shot guard and result checks as the automatic verification fallback. |
 | `clip` | `download` | Clip UUID or `https://suno.com/song/<id>` URL (positional, required) |
 | `--limit` | `list` | Max clips to return (default: `20`) |
 | `--page` | `list` | Pagination offset, 0-based (default: `0`) |

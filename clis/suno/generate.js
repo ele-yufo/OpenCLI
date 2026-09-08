@@ -130,7 +130,7 @@ async function nativeState(page) {
 export async function prepareSunoNativeSimple(page, payload) {
     if (payload.mode !== 'simple' || payload.model !== DEFAULT_SUNO_MODEL || payload.weirdness !== 0.5 || payload.styleWeight !== 0.5) {
         throw new CommandExecutionError(
-            'Suno requested webpage verification. The native fallback currently supports Simple mode, V5.5, and default sliders only; no generation was submitted.',
+            'The native fallback currently supports Simple mode, V5.5, and default sliders only; no generation was submitted.',
             `Use the requested advanced controls at ${SUNO_URL}/create. Completing verification once does not guarantee token-free API requests will work.`,
         );
     }
@@ -301,6 +301,7 @@ export const generateCommand = cli({
         { name: 'op', help: 'Output directory (default: ~/Music/suno)' },
         { name: 'timeout', type: 'int', default: 300, help: 'Max seconds to wait for clips to finish (default: 300)' },
         { name: 'sd', type: 'boolean', default: false, help: 'Skip download; only print clip ids and Suno URLs' },
+        { name: 'via-ui', type: 'boolean', default: false, help: 'Use the official Simple/V5.5 Create form even when webpage verification is not required' },
         { name: 'confirm-paid', type: 'boolean', default: false, help: 'Required to allow paid downloads (wav). Without it, paid formats are skipped with a warning.' },
     ],
     columns: ['status', 'clip', 'title', 'files', 'link'],
@@ -391,7 +392,8 @@ export const generateCommand = cli({
             transactionUuid,
             deviceId,
         };
-        const submission = captcha.required
+        const useNative = captcha.required || normalizeBooleanFlag(kwargs['via-ui']);
+        const submission = useNative
             ? await submitSunoNativeSimple(page, payload, timeout)
             : await submitSunoGeneration(page, payload);
 
@@ -410,7 +412,7 @@ export const generateCommand = cli({
         try {
             clips = await pollSunoClips(page, clipIds, timeout, deviceId);
         } catch (error) {
-            if (!captcha.required) throw error;
+            if (!useNative) throw error;
             throw nativeFailure(`Suno submitted ${clipIds.join(', ')} but polling did not finish. Do not regenerate; inspect or download these existing ids.`, error);
         }
         const completed = clips.filter(c => c.status === 'complete');
@@ -419,7 +421,7 @@ export const generateCommand = cli({
             throw new CommandExecutionError(`All Suno clips failed (${errors}). Open ${SUNO_URL}/song/${clipIds[0]} to inspect.`);
         }
 
-        if (captcha.required) {
+        if (useNative) {
             await renameSunoNativeClips(page, completed, title);
             const titledIds = completed.map(c => c.id);
             let verified = false;
