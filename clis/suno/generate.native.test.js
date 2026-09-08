@@ -1,6 +1,5 @@
 import { beforeEach, afterEach, describe, expect, it, vi } from 'vitest';
 import { JSDOM } from 'jsdom';
-import { Page } from '@jackwener/opencli/browser/page';
 
 const mocks = vi.hoisted(() => ({ session: vi.fn(), captcha: vi.fn(), submit: vi.fn(), poll: vi.fn(), download: vi.fn() }));
 vi.mock('./utils.js', async importOriginal => ({
@@ -20,13 +19,14 @@ const clips = () => ids.map(id => ({ id, title: 'Native title', status: 'complet
 
 // Browser-shaped fixture executes the production DOM reads, form preparation,
 // click/capture orchestration and title persistence, without a paid request.
-function browser({ model = 'v5.5', capture = true, body, entry = {}, challenge = false, noRows = false, clickError = false, saveTitle = true, saveServerTitle = true, covered = false, emptyForm = false } = {}) {
+function browser({ model = 'v5.5', capture = true, body, entry = {}, challenge = false, noRows = false, clickError = false, saveTitle = true, saveServerTitle = true, covered = false, emptyForm = false, replayCreate = false, replayInstrumental = false, storageUnavailable = false } = {}) {
     const dom = new JSDOM(`<button role="tab" aria-label="Simple" aria-selected="false"></button>
       <textarea maxlength="3000">previous prompt</textarea>
       <button aria-label="Clear all form inputs"></button>
       <button aria-label="Check this to generate an instrumental only song"><svg class="text-pink-500"></svg></button>
       <button aria-haspopup="menu">${model}</button><button aria-label="Create song"></button><main></main>`, { runScripts: 'outside-only', url: 'https://suno.com/create' });
     const w = dom.window;
+    if (storageUnavailable) Object.defineProperty(w, 'sessionStorage', { get() { throw new Error('storage blocked'); } });
     if (emptyForm) {
         w.document.querySelector('textarea').value = '';
         w.document.querySelector('button[aria-label="Clear all form inputs"]').disabled = true;
@@ -43,8 +43,17 @@ function browser({ model = 'v5.5', capture = true, body, entry = {}, challenge =
         dom,
         backendTitles: new Map(ids.map(id => [id, 'Native title'])),
         goto: vi.fn(),
+        screenshot: vi.fn(async () => ''),
         wait: vi.fn(async value => { if (typeof value === 'number') vi.advanceTimersByTime(value * 1000); }),
-        evaluate: vi.fn(async js => w.eval(js)),
+        evaluate: vi.fn(async js => {
+            const value = w.eval(js);
+            const isDispatch = js.includes('opencli:suno:create:');
+            if (isDispatch && clickError && value?.status === 'dispatched') throw Object.assign(new Error('lost execution result after click'), { code: 'command_result_unknown' });
+            // Simulate the production Page.evaluate target-navigation retry:
+            // the exact same expression executes again after its first write.
+            if ((isDispatch && replayCreate) || (replayInstrumental && js.includes('const active ='))) return w.eval(js);
+            return value;
+        }),
         startNetworkCapture: vi.fn(async () => capture),
         readNetworkCapture: vi.fn(async () => submitted ? [{
             url: 'https://studio-api-prod.suno.com/api/generate/v2-web/', method: 'POST', responseStatus: 200,
@@ -57,39 +66,28 @@ function browser({ model = 'v5.5', capture = true, body, entry = {}, challenge =
             targets[0].value = value;
             return { verified: targets[0].value === value };
         }),
-        click: vi.fn(async selector => {
-            const target = w.document.querySelector(selector);
-            if (!target) throw new Error('missing selector');
-            if (selector.includes('role="tab"')) target.setAttribute('aria-selected', 'true');
-            else if (selector.includes('Clear all')) {
-                w.document.body.insertAdjacentHTML('beforeend', '<div role="alertdialog"><h2>Clear entire form?</h2><button class="hxc-btn-variant-primary">Confirm</button><button>Cancel</button></div>');
-            } else if (selector.includes('alertdialog')) {
-                w.document.querySelector('textarea').value = '';
-                w.document.querySelector('svg').setAttribute('class', 'text-background-tertiary');
-                w.document.querySelector('[role="alertdialog"]').remove();
-            } else if (selector.includes('instrumental only')) {
-                const icon = target.querySelector('svg');
-                icon.setAttribute('class', icon.getAttribute('class').includes('pink') ? 'text-background-tertiary' : 'text-pink-500');
-            } else if (selector.includes('Create song')) {
-                throw new Error('Unsafe general click wrapper used for paid Create');
-            } else if (selector.includes('Edit title')) {
-                const row = target.parentElement;
-                editing = { row, href: row.querySelector('a').getAttribute('href') };
-                row.querySelector('a').remove();
-                row.insertAdjacentHTML('afterbegin', '<input maxlength="80">');
-            }
-        }),
-        pressKey: vi.fn(async key => {
-            if (key === 'Enter' && saveTitle) {
-                const value = editing.row.querySelector('input').value;
-                editing.row.querySelector('input').remove();
-                const a = w.document.createElement('a'); a.href = editing.href; a.textContent = value;
-                editing.row.prepend(a);
-                if (saveServerTitle) page.backendTitles.set(editing.href.split('/').pop(), value);
-            }
-        }),
-        cdp: vi.fn(async (method, params) => {
-            if (method !== 'Input.dispatchMouseEvent' || params.type !== 'mouseReleased') return {};
+        click: vi.fn(async () => { throw new Error('general click wrapper must not run'); }),
+        nativeClick: vi.fn(async () => { throw new Error('no native click fallback'); }),
+        controls: vi.fn(),
+        dispatched: vi.fn(),
+    };
+    w.document.addEventListener('click', event => {
+        const target = event.target.closest('button');
+        if (!target) return;
+        const label = target.getAttribute('aria-label') || target.textContent;
+        page.controls(label);
+        if (label === 'Simple') target.setAttribute('aria-selected', 'true');
+        else if (label === 'Clear all form inputs') {
+            w.document.body.insertAdjacentHTML('beforeend', '<div role="alertdialog"><h2>Clear entire form?</h2><button class="hxc-btn-variant-primary">Confirm</button><button>Cancel</button></div>');
+        } else if (label === 'Confirm') {
+            w.document.querySelector('textarea').value = '';
+            w.document.querySelector('svg').setAttribute('class', 'text-background-tertiary');
+            w.document.querySelector('[role="alertdialog"]').remove();
+        } else if (label.includes('instrumental only')) {
+            const icon = target.querySelector('svg');
+            icon.setAttribute('class', icon.getAttribute('class').includes('pink') ? 'text-background-tertiary' : 'text-pink-500');
+        } else if (label === 'Create song') {
+            page.dispatched();
             submitted = true;
             if (!noRows) w.document.querySelector('main').innerHTML = ids.map(id => `<div data-testid="clip-row"><a href="/song/${id}">Native title</a><button aria-label="Edit title"></button></div>`).join('');
             if (challenge) {
@@ -97,16 +95,25 @@ function browser({ model = 'v5.5', capture = true, body, entry = {}, challenge =
                 frame.src = 'https://challenges.cloudflare.com/visible-challenge';
                 w.document.body.append(frame);
             }
-            if (clickError) throw Object.assign(new Error('transport lost after click'), { code: 'command_result_unknown' });
-            return {};
-        }),
-    };
-    // Exercise the real production mouse primitive, including a response lost
-    // after mouseReleased. The generic page.click fallback must never run.
-    page.nativeClick = vi.fn(async (x, y) => Page.prototype.nativeClick.call(page, x, y));
+        } else if (label === 'Edit title') {
+            const row = target.parentElement;
+            editing = { row, href: row.querySelector('a').getAttribute('href') };
+            row.querySelector('a').remove();
+            row.insertAdjacentHTML('afterbegin', '<input maxlength="80">');
+        }
+    });
+    w.document.addEventListener('keydown', event => {
+        if (event.key === 'Enter' && saveTitle && editing) {
+            const value = editing.row.querySelector('input').value;
+            editing.row.querySelector('input').remove();
+            const a = w.document.createElement('a'); a.href = editing.href; a.textContent = value;
+            editing.row.prepend(a);
+            if (saveServerTitle) page.backendTitles.set(editing.href.split('/').pop(), value);
+        }
+    });
     return page;
 }
-const createClicks = page => page.cdp.mock.calls.filter(([, p]) => p.type === 'mouseReleased');
+const createClicks = page => page.dispatched.mock.calls;
 
 beforeEach(() => {
     vi.useFakeTimers();
@@ -128,7 +135,7 @@ describe('Suno native Create fallback', () => {
         expect(mocks.poll.mock.calls[0].slice(1)).toEqual([ids, 2, 'device-test']);
         expect(rows.map(row => row.title)).toEqual(['Test score', 'Test score']);
         expect(rows.map(row => row.link)).toEqual(ids.map(id => `🔗 https://suno.com/song/${id}`));
-        expect(page.readNetworkCapture.mock.invocationCallOrder[0]).toBeLessThan(page.nativeClick.mock.invocationCallOrder[0]);
+        expect(page.readNetworkCapture.mock.invocationCallOrder[0]).toBeLessThan(page.dispatched.mock.invocationCallOrder[0]);
         expect(mocks.poll).toHaveBeenCalledTimes(2);
     });
     it('continues into the existing download path for the same clip ids', async () => {
@@ -142,7 +149,7 @@ describe('Suno native Create fallback', () => {
         const page = browser({ emptyForm: true });
         const rows = await generateCommand.func(page, options);
         expect(rows).toHaveLength(2);
-        expect(page.click.mock.calls.some(([s]) => s.includes('Clear all'))).toBe(false);
+        expect(page.controls.mock.calls.some(([s]) => s.includes('Clear all'))).toBe(false);
         expect(createClicks(page)).toHaveLength(1);
     });
     it.each([{ model: 'chirp-bluejay' }, { weirdness: 0.8 }, { styleWeight: 0.8 }, { mode: 'custom' }])('rejects unmapped parameters before navigation: %j', async changed => {
@@ -198,13 +205,28 @@ describe('Suno native Create fallback', () => {
         expect(createClicks(page)).toHaveLength(1);
         expect(mocks.submit).not.toHaveBeenCalled();
     });
-    it('retains the unknown-outcome cause and never dispatches a second release after an acknowledged-lost click', async () => {
+    it('retains the unknown-outcome cause after a lost DOM execution result', async () => {
         const page = browser({ clickError: true });
         const error = await generateCommand.func(page, options).catch(e => e);
         expect(error.cause?.code).toBe('command_result_unknown');
         expect(createClicks(page)).toHaveLength(1);
-        expect(page.nativeClick).toHaveBeenCalledTimes(1);
+        expect(page.nativeClick).not.toHaveBeenCalled();
         expect(mocks.submit).not.toHaveBeenCalled();
+    });
+    it('dispatches once when evaluate re-executes after navigation', async () => {
+        const page = browser({ replayCreate: true, replayInstrumental: true });
+        const rows = await generateCommand.func(page, options);
+        expect(rows).toHaveLength(2);
+        expect(createClicks(page)).toHaveLength(1);
+        expect(page.controls.mock.calls.filter(([s]) => s.includes('instrumental only'))).toHaveLength(1);
+        expect(page.click).not.toHaveBeenCalled();
+        expect(page.nativeClick).not.toHaveBeenCalled();
+        expect(mocks.submit).not.toHaveBeenCalled();
+    });
+    it('does not submit when sessionStorage cannot hold the single-shot guard', async () => {
+        const page = browser({ storageUnavailable: true });
+        await expect(generateCommand.func(page, options)).rejects.toThrow('no generation was submitted');
+        expect(createClicks(page)).toHaveLength(0);
     });
     it('rejects an optimistic DOM title that was not saved by the server', async () => {
         const page = browser({ saveServerTitle: false });

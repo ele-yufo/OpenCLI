@@ -63,24 +63,44 @@ function nativeFailure(message, cause) {
     return failure;
 }
 
-async function createClickPoint(page) {
-    if (typeof page.nativeClick !== 'function') throw new CommandExecutionError('Suno Create requires native single-click support; no generation was submitted.');
-    const point = await page.evaluate(`(() => {
+async function clickSunoControl(page, selector) {
+    const clicked = await page.evaluate(`(() => {
+        const controls = document.querySelectorAll(${JSON.stringify(selector)});
+        if (controls.length !== 1 || controls[0].disabled) return false;
+        controls[0].click();
+        return true;
+    })()`);
+    if (!clicked) throw new CommandExecutionError('Suno form control is missing or disabled; no generation was submitted.');
+}
+
+export async function dispatchSunoCreateOnce(page, invocationId) {
+    if (!CLIP_ID.test(invocationId || '')) throw new CommandExecutionError('Suno Create needs a unique invocation id; no generation was submitted.');
+    // Page.evaluate may re-execute after target navigation. sessionStorage
+    // survives same-tab reloads, so an invocation can dispatch at most once.
+    // This is only a local duplicate-write guard, never a Suno verification token.
+    return page.evaluate(`(() => {
+        if (location.origin !== ${JSON.stringify(SUNO_URL)}) return {status: 'not_dispatched'};
+        const key = ${JSON.stringify('opencli:suno:create:' + invocationId)};
+        try { if (sessionStorage.getItem(key)) return {status: 'already_dispatched'}; }
+        catch { return {status: 'storage_unavailable'}; }
         const buttons = document.querySelectorAll(${JSON.stringify(CREATE)});
-        if (buttons.length !== 1) return null;
+        if (buttons.length !== 1) return {status: 'not_dispatched'};
         const button = buttons[0];
-        if (button.disabled || getComputedStyle(button).visibility === 'hidden') return null;
+        if (button.disabled || getComputedStyle(button).visibility === 'hidden') return {status: 'not_dispatched'};
         button.scrollIntoView({block: 'center', inline: 'center'});
         const r = button.getBoundingClientRect();
-        if (r.width <= 0 || r.height <= 0) return null;
+        if (r.width <= 0 || r.height <= 0) return {status: 'not_dispatched'};
         const x = r.left + r.width / 2, y = r.top + r.height / 2;
         const hit = document.elementFromPoint(x, y);
-        return hit && (hit === button || button.contains(hit)) ? {x, y} : null;
+        if (!hit || !(hit === button || button.contains(hit))) return {status: 'not_dispatched'};
+        try {
+            sessionStorage.setItem(key, 'dispatched');
+            if (sessionStorage.getItem(key) !== 'dispatched') return {status: 'storage_unavailable'};
+        }
+        catch { return {status: 'storage_unavailable'}; }
+        button.click();
+        return {status: 'dispatched'};
     })()`);
-    if (!point || !Number.isFinite(point.x) || !Number.isFinite(point.y)) {
-        throw new CommandExecutionError('Suno Create is missing, disabled, or covered; no generation was submitted.');
-    }
-    return point;
 }
 
 async function nativeState(page) {
@@ -97,6 +117,7 @@ async function nativeState(page) {
             clear: document.querySelector('button[aria-label="Clear all form inputs"]')?.disabled === false,
             enabled: document.querySelector(${JSON.stringify(CREATE)})?.disabled === false,
             ids: Array.from(document.querySelectorAll('[data-testid="clip-row"] a[href^="/song/"]')).map(e => e.getAttribute('href').split('/').pop()),
+            pendingRows: !!document.querySelector('[role="table"] .clip-row:not([data-testid="clip-row"])'),
             manualChallenge: Array.from(document.querySelectorAll('iframe')).some(e => {
                 const r = e.getBoundingClientRect();
                 return visible(e) && r.width > 30 && r.height > 30 &&
@@ -118,12 +139,15 @@ export async function prepareSunoNativeSimple(page, payload) {
     }
     await page.goto(`${SUNO_URL}/create`);
     await page.wait({ selector: 'button[role="tab"][aria-label="Simple"]', timeout: 30 });
-    await page.click('button[role="tab"][aria-label="Simple"]');
+    await clickSunoControl(page, 'button[role="tab"][aria-label="Simple"]');
     await page.wait({ selector: SIMPLE_PROMPT, timeout: 10 });
+    // Hidden Chrome tabs can leave Suno's lazy rows unpainted indefinitely.
+    // A compositor capture flushes the real UI; discard it, do not save images.
+    await page.screenshot({ format: 'jpeg', quality: 1 });
     const initial = await nativeState(page);
     if (initial.manualChallenge) throw new CommandExecutionError('Suno shows a human verification challenge. Complete it in the Create tab; no generation was submitted.');
     if (initial.clear) {
-        await page.click('button[aria-label="Clear all form inputs"]');
+        await clickSunoControl(page, 'button[aria-label="Clear all form inputs"]');
         await page.wait(0.2);
         const confirmClear = await page.evaluate(`(() => {
             const dialogs = Array.from(document.querySelectorAll('[role="alertdialog"]')).filter(e => e.getClientRects().length);
@@ -132,7 +156,7 @@ export async function prepareSunoNativeSimple(page, payload) {
                 d.querySelector('button.hxc-btn-variant-primary')?.textContent === 'Confirm';
         })()`);
         if (!confirmClear) throw new CommandExecutionError('Suno clear-form confirmation changed; no generation was submitted.');
-        await page.click('[role="alertdialog"] button.hxc-btn-variant-primary');
+        await clickSunoControl(page, '[role="alertdialog"] button.hxc-btn-variant-primary');
         await page.wait(0.3);
         const cleared = await nativeState(page);
         if (cleared.prompt !== '') throw new CommandExecutionError('Suno did not clear the previous form; no generation was submitted.');
@@ -142,7 +166,15 @@ export async function prepareSunoNativeSimple(page, payload) {
     await page.wait(0.2);
     const state = await nativeState(page);
     if (state.instrumental === null) throw new CommandExecutionError('Suno instrumental control changed; no generation was submitted.');
-    if (state.instrumental !== payload.makeInstrumental) await page.click(INSTRUMENTAL);
+    const instrumentalSet = await page.evaluate(`(() => {
+        const b = document.querySelector(${JSON.stringify(INSTRUMENTAL)});
+        const cls = b?.querySelector('svg')?.getAttribute('class') || '';
+        const active = cls.includes('text-pink-500') ? true : cls.includes('text-background-tertiary') ? false : null;
+        if (!b || b.disabled || active === null) return false;
+        if (active !== ${JSON.stringify(payload.makeInstrumental)}) b.click();
+        return true;
+    })()`);
+    if (!instrumentalSet) throw new CommandExecutionError('Suno instrumental control changed; no generation was submitted.');
     let final;
     for (let attempt = 0; attempt < 10; attempt++) {
         await page.wait(0.2);
@@ -152,7 +184,13 @@ export async function prepareSunoNativeSimple(page, payload) {
     if (!final.simple || final.prompt !== payload.description || final.instrumental !== payload.makeInstrumental || final.models.length !== 1 || final.models[0] !== 'v5.5' || !final.enabled) {
         throw new CommandExecutionError('Suno native form read-back did not match the requested mode, description, instrumental state, or V5.5 model; no generation was submitted.');
     }
-    return final.ids;
+    for (let attempt = 0; attempt < 10; attempt++) {
+        await page.screenshot({ format: 'jpeg', quality: 1 });
+        final = await nativeState(page);
+        if (!final.pendingRows) return final.ids;
+        await page.wait(0.2);
+    }
+    throw new CommandExecutionError('Suno library is still showing unhydrated rows; no generation was submitted.');
 }
 
 export async function submitSunoNativeSimple(page, payload, timeout) {
@@ -161,18 +199,19 @@ export async function submitSunoNativeSimple(page, payload, timeout) {
         throw new CommandExecutionError('Suno native generation needs browser response capture; no generation was submitted. Update the OpenCLI browser extension.');
     }
     await page.readNetworkCapture(); // Drain old requests before the only click.
-    const point = await createClickPoint(page);
     const recovery = `Do not rerun generate automatically. Check ${SUNO_URL}/create or run opencli suno list, then download the existing clip ids.`;
     try {
-        // page.click() may fall back to a second JS click after a lost native
-        // result. Paid submission must use the no-fallback native primitive.
-        await page.nativeClick(point.x, point.y);
+        const dispatch = await dispatchSunoCreateOnce(page, payload.transactionUuid);
+        if (!['dispatched', 'already_dispatched'].includes(dispatch?.status)) {
+            throw new CommandExecutionError('Suno Create is missing, disabled, covered, or cannot store the duplicate-write guard; no generation was submitted.');
+        }
         const deadline = Date.now() + Math.min(timeout, 90) * 1000;
         // The bridge drains in-flight captures. Wait for new visible result rows
         // before reading, so the completed response body is not lost.
         let state;
         do {
             await page.wait(1);
+            await page.screenshot({ format: 'jpeg', quality: 1 });
             state = await nativeState(page);
             if (state.manualChallenge) {
                 throw new CommandExecutionError(`Suno needs human verification in the Create tab. Complete it there and check for results. ${recovery}`);
@@ -207,15 +246,22 @@ export async function submitSunoNativeSimple(page, payload, timeout) {
 }
 
 export async function renameSunoNativeClips(page, clips, title) {
+    await page.screenshot({ format: 'jpeg', quality: 1 });
     for (const clip of clips) {
         if (!CLIP_ID.test(clip.id)) throw new CommandExecutionError('Invalid Suno clip identity for title edit.');
         const row = `[data-testid="clip-row"]:has(a[href="/song/${clip.id}"])`;
         const editor = '[data-testid="clip-row"] input[maxlength="80"]';
         try {
-            await page.click(`${row} button[aria-label="Edit title"]`);
+            await clickSunoControl(page, `${row} button[aria-label="Edit title"]`);
             const filled = await page.fillText(editor, title);
             if (!filled?.verified) throw new Error('title read-back');
-            await page.pressKey('Enter');
+            const submitted = await page.evaluate(`(() => {
+                const inputs = document.querySelectorAll(${JSON.stringify(editor)});
+                if (inputs.length !== 1) return false;
+                inputs[0].dispatchEvent(new KeyboardEvent('keydown', {key: 'Enter', code: 'Enter', bubbles: true}));
+                return true;
+            })()`);
+            if (!submitted) throw new Error('title editor unavailable');
             let saved = false;
             for (let attempt = 0; attempt < 10; attempt++) {
                 await page.wait(0.5);
