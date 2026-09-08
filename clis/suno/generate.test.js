@@ -112,11 +112,11 @@ describe('suno generate argument validation', () => {
         expect(mocks.submitSunoGeneration).not.toHaveBeenCalled();
     });
 
-    it('refuses to submit when captcha is required (out-of-scope for headless flow)', async () => {
+    it('does not silently map Custom mode onto the Simple native fallback', async () => {
         mocks.checkSunoCaptcha.mockResolvedValue({ ok: true, required: true });
-        await expect(generateCommand.func(createPage(), { prompt: 'foo', sd: true, timeout: 60 })).rejects.toMatchObject({
+        await expect(generateCommand.func(createPage(), { lyrics: '[Verse] foo', sd: true, timeout: 60 })).rejects.toMatchObject({
             code: 'COMMAND_EXEC',
-            message: expect.stringContaining('CAPTCHA challenge'),
+            message: expect.stringContaining('native fallback currently supports Simple mode'),
         });
         expect(mocks.submitSunoGeneration).not.toHaveBeenCalled();
     });

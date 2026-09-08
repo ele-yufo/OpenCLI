@@ -44,6 +44,162 @@ function displayPath(filePath) {
     return filePath.startsWith(home) ? `~${filePath.slice(home.length)}` : filePath;
 }
 
+// Strategy: UI_SELECTOR (visible-ui), with response capture for clip identity.
+// Suno's /api/c/check can return required=true while its own Create page
+// completes verification without a human challenge. Do not replay or fabricate
+// verification tokens: click Create once and let the site's runtime submit.
+// The bounded fallback supports Simple/V5.5/default sliders only. Other
+// controls fail before submission rather than silently changing the request.
+const SIMPLE_PROMPT = 'textarea[maxlength="3000"]';
+const INSTRUMENTAL = 'button[aria-label="Check this to generate an instrumental only song"]';
+const CREATE = 'button[aria-label="Create song"]';
+const GENERATE_URL = 'https://studio-api-prod.suno.com/api/generate/v2-web/';
+const CLIP_ID = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
+
+async function nativeState(page) {
+    return page.evaluate(`(() => {
+        const visible = e => e.getClientRects().length && getComputedStyle(e).visibility !== 'hidden';
+        const toggle = document.querySelector(${JSON.stringify(INSTRUMENTAL)});
+        const icon = toggle?.querySelector('svg');
+        const iconClass = icon?.getAttribute('class') || '';
+        return {
+            simple: document.querySelector('button[role="tab"][aria-label="Simple"]')?.getAttribute('aria-selected') === 'true',
+            prompt: document.querySelector(${JSON.stringify(SIMPLE_PROMPT)})?.value,
+            instrumental: iconClass.includes('text-pink-500') ? true : iconClass.includes('text-background-tertiary') ? false : null,
+            models: Array.from(document.querySelectorAll('button[aria-haspopup="menu"]')).filter(e => visible(e) && /^v[0-9]/.test(e.innerText.trim())).map(e => e.innerText.trim()),
+            clear: !!document.querySelector('button[aria-label="Clear all form inputs"]'),
+            enabled: document.querySelector(${JSON.stringify(CREATE)})?.disabled === false,
+            ids: Array.from(document.querySelectorAll('[data-testid="clip-row"] a[href^="/song/"]')).map(e => e.getAttribute('href').split('/').pop()),
+            manualChallenge: Array.from(document.querySelectorAll('iframe')).some(e => {
+                const r = e.getBoundingClientRect();
+                return visible(e) && r.width > 30 && r.height > 30 &&
+                    /challenges\\.cloudflare\\.com|hcaptcha\\.com|recaptcha/.test(e.src);
+            }),
+        };
+    })()`);
+}
+
+export async function prepareSunoNativeSimple(page, payload) {
+    if (payload.mode !== 'simple' || payload.model !== DEFAULT_SUNO_MODEL || payload.weirdness !== 0.5 || payload.styleWeight !== 0.5) {
+        throw new CommandExecutionError(
+            'Suno requested webpage verification. The native fallback currently supports Simple mode, V5.5, and default sliders only; no generation was submitted.',
+            `Use the requested advanced controls at ${SUNO_URL}/create. Completing verification once does not guarantee token-free API requests will work.`,
+        );
+    }
+    if (payload.description.length > 3000) {
+        throw new ArgumentError('Suno Simple mode allows at most 3000 characters; no generation was submitted.');
+    }
+    await page.goto(`${SUNO_URL}/create`);
+    await page.wait({ selector: 'button[role="tab"][aria-label="Simple"]', timeout: 30 });
+    await page.click('button[role="tab"][aria-label="Simple"]');
+    await page.wait({ selector: SIMPLE_PROMPT, timeout: 10 });
+    const initial = await nativeState(page);
+    if (initial.manualChallenge) throw new CommandExecutionError('Suno shows a human verification challenge. Complete it in the Create tab; no generation was submitted.');
+    if (initial.clear) {
+        await page.click('button[aria-label="Clear all form inputs"]');
+        await page.wait(0.2);
+        const confirmClear = await page.evaluate(`(() => {
+            const dialogs = Array.from(document.querySelectorAll('[role="alertdialog"]')).filter(e => e.getClientRects().length);
+            const d = dialogs.length === 1 ? dialogs[0] : null;
+            return d?.querySelector('h2')?.textContent === 'Clear entire form?' &&
+                d.querySelector('button.hxc-btn-variant-primary')?.textContent === 'Confirm';
+        })()`);
+        if (!confirmClear) throw new CommandExecutionError('Suno clear-form confirmation changed; no generation was submitted.');
+        await page.click('[role="alertdialog"] button.hxc-btn-variant-primary');
+        await page.wait(0.3);
+        const cleared = await nativeState(page);
+        if (cleared.prompt !== '') throw new CommandExecutionError('Suno did not clear the previous form; no generation was submitted.');
+    }
+    const filled = await page.fillText(SIMPLE_PROMPT, payload.description);
+    if (!filled?.verified) throw new CommandExecutionError('Suno description did not read back correctly; no generation was submitted.');
+    await page.wait(0.2);
+    const state = await nativeState(page);
+    if (state.instrumental === null) throw new CommandExecutionError('Suno instrumental control changed; no generation was submitted.');
+    if (state.instrumental !== payload.makeInstrumental) await page.click(INSTRUMENTAL);
+    let final;
+    for (let attempt = 0; attempt < 10; attempt++) {
+        await page.wait(0.2);
+        final = await nativeState(page);
+        if (final.instrumental === payload.makeInstrumental && final.enabled) break;
+    }
+    if (!final.simple || final.prompt !== payload.description || final.instrumental !== payload.makeInstrumental || final.models.length !== 1 || final.models[0] !== 'v5.5' || !final.enabled) {
+        throw new CommandExecutionError('Suno native form read-back did not match the requested mode, description, instrumental state, or V5.5 model; no generation was submitted.');
+    }
+    return final.ids;
+}
+
+export async function submitSunoNativeSimple(page, payload, timeout) {
+    const previousIds = new Set(await prepareSunoNativeSimple(page, payload));
+    if (typeof page.startNetworkCapture !== 'function' || !await page.startNetworkCapture('/api/generate/v2-web/')) {
+        throw new CommandExecutionError('Suno native generation needs browser response capture; no generation was submitted. Update the OpenCLI browser extension.');
+    }
+    await page.readNetworkCapture(); // Drain old requests before the only click.
+    const recovery = `Do not rerun generate automatically. Check ${SUNO_URL}/create or run opencli suno list, then download the existing clip ids.`;
+    try {
+        await page.click(CREATE);
+        const deadline = Date.now() + Math.min(timeout, 90) * 1000;
+        // The bridge drains in-flight captures. Wait for new visible result rows
+        // before reading, so the completed response body is not lost.
+        let state;
+        do {
+            await page.wait(1);
+            state = await nativeState(page);
+            if (state.manualChallenge) {
+                throw new CommandExecutionError(`Suno needs human verification in the Create tab. Complete it there and check for results. ${recovery}`);
+            }
+            if (state.ids.filter(id => !previousIds.has(id)).length >= 2) break;
+        } while (Date.now() < deadline);
+        const entries = await page.readNetworkCapture();
+        const responses = entries.filter(e => e?.url === GENERATE_URL && e.method === 'POST');
+        if (responses.length !== 1) throw new CommandExecutionError(`Suno native submission outcome is uncertain (expected one generation response, received ${responses.length}). ${recovery}`);
+        const response = responses[0];
+        if (response.responseStatus !== 200 || response.responseBodyTruncated || typeof response.responsePreview !== 'string') {
+            throw new CommandExecutionError(`Suno native submission response is unavailable or unsuccessful (HTTP ${response.responseStatus || 'unknown'}). ${recovery}`);
+        }
+        let submission;
+        try { submission = JSON.parse(response.responsePreview); } catch {
+            throw new CommandExecutionError(`Suno native submission returned invalid JSON. ${recovery}`);
+        }
+        const clips = submission?.clips;
+        if (!Array.isArray(clips) || clips.length !== 2 || new Set(clips.map(c => c?.id)).size !== 2 || clips.some(c =>
+            !CLIP_ID.test(c?.id || '') || previousIds.has(c.id) || !state.ids.includes(c.id) ||
+            c.model_name !== payload.model || c.metadata?.gpt_description_prompt !== payload.description ||
+            c.metadata?.make_instrumental !== payload.makeInstrumental)) {
+            throw new CommandExecutionError(`Suno native response did not match this request's new clip identities, model, description, and instrumental state. ${recovery}`);
+        }
+        return submission;
+    } catch (error) {
+        if (error instanceof CommandExecutionError) throw error;
+        // A transport/click error may occur after the site accepted the write.
+        // Never fall back to an API POST or a second Create click here.
+        throw new CommandExecutionError(`Suno native submission outcome is uncertain. ${recovery}`);
+    }
+}
+
+export async function renameSunoNativeClips(page, clips, title) {
+    for (const clip of clips) {
+        if (!CLIP_ID.test(clip.id)) throw new CommandExecutionError('Invalid Suno clip identity for title edit.');
+        const row = `[data-testid="clip-row"]:has(a[href="/song/${clip.id}"])`;
+        const editor = '[data-testid="clip-row"] input[maxlength="80"]';
+        try {
+            await page.click(`${row} button[aria-label="Edit title"]`);
+            const filled = await page.fillText(editor, title);
+            if (!filled?.verified) throw new Error('title read-back');
+            await page.pressKey('Enter');
+            let saved = false;
+            for (let attempt = 0; attempt < 10; attempt++) {
+                await page.wait(0.5);
+                saved = await page.evaluate(`(() => document.querySelector('a[href="/song/${clip.id}"]')?.textContent === ${JSON.stringify(title)})()`);
+                if (saved) break;
+            }
+            if (!saved) throw new Error('title save');
+            clip.title = title;
+        } catch {
+            throw new CommandExecutionError(`Suno generated ${clips.map(c => c.id).join(', ')} but could not verify title editing. Do not regenerate; inspect these clips at ${SUNO_URL}/create.`);
+        }
+    }
+}
+
 export const generateCommand = cli({
     site: 'suno',
     name: 'generate',
@@ -133,12 +289,6 @@ export const generateCommand = cli({
                 `Open ${SUNO_URL}/create in Chrome and verify the account is ready, then retry.`,
             );
         }
-        if (captcha?.required) {
-            throw new CommandExecutionError(
-                'Suno requires a CAPTCHA challenge for this account/IP right now.',
-                `Open ${SUNO_URL}/create in Chrome, solve a Create challenge once, then retry.`,
-            );
-        }
         if (session.totalCreditsAvailable < 10) {
             const b = session.breakdown;
             throw new CommandExecutionError(
@@ -149,7 +299,7 @@ export const generateCommand = cli({
         const transactionUuid = crypto.randomUUID();
         const createSessionToken = crypto.randomUUID();
 
-        const submission = await submitSunoGeneration(page, {
+        const payload = {
             mode: isCustom ? 'custom' : 'simple',
             model,
             title,
@@ -164,7 +314,10 @@ export const generateCommand = cli({
             createSessionToken,
             transactionUuid,
             deviceId,
-        });
+        };
+        const submission = captcha.required
+            ? await submitSunoNativeSimple(page, payload, timeout)
+            : await submitSunoGeneration(page, payload);
 
         if (!Array.isArray(submission.clips)) {
             throw new CommandExecutionError('Suno generation returned malformed clips payload.');
@@ -177,12 +330,20 @@ export const generateCommand = cli({
             throw new CommandExecutionError('Suno accepted the request but returned no clip ids.');
         }
 
-        const clips = await pollSunoClips(page, clipIds, timeout, deviceId);
+        let clips;
+        try {
+            clips = await pollSunoClips(page, clipIds, timeout, deviceId);
+        } catch (error) {
+            if (!captcha.required) throw error;
+            throw new CommandExecutionError(`Suno submitted ${clipIds.join(', ')} but polling did not finish. Do not regenerate; inspect or download these existing ids.`);
+        }
         const completed = clips.filter(c => c.status === 'complete');
         if (!completed.length) {
             const errors = clips.map(c => `${c.id.slice(0, 8)}:${c.status}`).join(', ');
             throw new CommandExecutionError(`All Suno clips failed (${errors}). Open ${SUNO_URL}/song/${clipIds[0]} to inspect.`);
         }
+
+        if (captcha.required) await renameSunoNativeClips(page, completed, title);
 
         const rows = [];
         for (const clip of clips) {
