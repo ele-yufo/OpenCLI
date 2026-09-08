@@ -1,5 +1,6 @@
 import { beforeEach, afterEach, describe, expect, it, vi } from 'vitest';
 import { JSDOM } from 'jsdom';
+import { Page } from '@jackwener/opencli/browser/page';
 
 const mocks = vi.hoisted(() => ({ session: vi.fn(), captcha: vi.fn(), submit: vi.fn(), poll: vi.fn(), download: vi.fn() }));
 vi.mock('./utils.js', async importOriginal => ({
@@ -19,7 +20,7 @@ const clips = () => ids.map(id => ({ id, title: 'Native title', status: 'complet
 
 // Browser-shaped fixture executes the production DOM reads, form preparation,
 // click/capture orchestration and title persistence, without a paid request.
-function browser({ model = 'v5.5', capture = true, body, entry = {}, challenge = false, noRows = false, clickError = false, saveTitle = true } = {}) {
+function browser({ model = 'v5.5', capture = true, body, entry = {}, challenge = false, noRows = false, clickError = false, saveTitle = true, saveServerTitle = true, covered = false } = {}) {
     const dom = new JSDOM(`<button role="tab" aria-label="Simple" aria-selected="false"></button>
       <textarea maxlength="3000">previous prompt</textarea>
       <button aria-label="Clear all form inputs"></button>
@@ -28,11 +29,14 @@ function browser({ model = 'v5.5', capture = true, body, entry = {}, challenge =
     const w = dom.window;
     Object.defineProperty(w.HTMLElement.prototype, 'innerText', { get() { return this.textContent; } });
     w.Element.prototype.getClientRects = function () { return this.hidden ? [] : [{}]; };
-    w.Element.prototype.getBoundingClientRect = () => ({ width: 300, height: 80 });
+    w.Element.prototype.getBoundingClientRect = () => ({ left: 0, top: 0, width: 300, height: 80 });
+    w.Element.prototype.scrollIntoView = () => {};
+    w.document.elementFromPoint = () => covered ? w.document.body : w.document.querySelector('button[aria-label="Create song"]');
     let submitted = false;
     let editing;
     const page = {
         dom,
+        backendTitles: new Map(ids.map(id => [id, 'Native title'])),
         goto: vi.fn(),
         wait: vi.fn(async value => { if (typeof value === 'number') vi.advanceTimersByTime(value * 1000); }),
         evaluate: vi.fn(async js => w.eval(js)),
@@ -62,14 +66,7 @@ function browser({ model = 'v5.5', capture = true, body, entry = {}, challenge =
                 const icon = target.querySelector('svg');
                 icon.setAttribute('class', icon.getAttribute('class').includes('pink') ? 'text-background-tertiary' : 'text-pink-500');
             } else if (selector.includes('Create song')) {
-                submitted = true;
-                if (clickError) throw new Error('transport lost after click');
-                if (!noRows) w.document.querySelector('main').innerHTML = ids.map(id => `<div data-testid="clip-row"><a href="/song/${id}">Native title</a><button aria-label="Edit title"></button></div>`).join('');
-                if (challenge) {
-                    const frame = w.document.createElement('iframe');
-                    frame.src = 'https://challenges.cloudflare.com/visible-challenge';
-                    w.document.body.append(frame);
-                }
+                throw new Error('Unsafe general click wrapper used for paid Create');
             } else if (selector.includes('Edit title')) {
                 const row = target.parentElement;
                 editing = { row, href: row.querySelector('a').getAttribute('href') };
@@ -83,19 +80,35 @@ function browser({ model = 'v5.5', capture = true, body, entry = {}, challenge =
                 editing.row.querySelector('input').remove();
                 const a = w.document.createElement('a'); a.href = editing.href; a.textContent = value;
                 editing.row.prepend(a);
+                if (saveServerTitle) page.backendTitles.set(editing.href.split('/').pop(), value);
             }
         }),
+        cdp: vi.fn(async (method, params) => {
+            if (method !== 'Input.dispatchMouseEvent' || params.type !== 'mouseReleased') return {};
+            submitted = true;
+            if (!noRows) w.document.querySelector('main').innerHTML = ids.map(id => `<div data-testid="clip-row"><a href="/song/${id}">Native title</a><button aria-label="Edit title"></button></div>`).join('');
+            if (challenge) {
+                const frame = w.document.createElement('iframe');
+                frame.src = 'https://challenges.cloudflare.com/visible-challenge';
+                w.document.body.append(frame);
+            }
+            if (clickError) throw Object.assign(new Error('transport lost after click'), { code: 'command_result_unknown' });
+            return {};
+        }),
     };
+    // Exercise the real production mouse primitive, including a response lost
+    // after mouseReleased. The generic page.click fallback must never run.
+    page.nativeClick = vi.fn(async (x, y) => Page.prototype.nativeClick.call(page, x, y));
     return page;
 }
-const createClicks = page => page.click.mock.calls.filter(([s]) => s.includes('Create song'));
+const createClicks = page => page.cdp.mock.calls.filter(([, p]) => p.type === 'mouseReleased');
 
 beforeEach(() => {
     vi.useFakeTimers();
     mocks.session.mockReset().mockResolvedValue({ planId: 'plan-test', deviceId: 'device-test', totalCreditsAvailable: 20, breakdown: {} });
     mocks.captcha.mockReset().mockResolvedValue({ ok: true, required: true });
     mocks.submit.mockReset();
-    mocks.poll.mockReset().mockImplementation(async () => clips());
+    mocks.poll.mockReset().mockImplementation(async page => clips().map(c => ({ ...c, title: page.backendTitles.get(c.id) })));
     mocks.download.mockReset().mockResolvedValue({ written: [{ ok: true, format: 'metadata', file: '/tmp/test.json' }] });
 });
 afterEach(() => vi.useRealTimers());
@@ -110,8 +123,8 @@ describe('Suno native Create fallback', () => {
         expect(mocks.poll.mock.calls[0].slice(1)).toEqual([ids, 2, 'device-test']);
         expect(rows.map(row => row.title)).toEqual(['Test score', 'Test score']);
         expect(rows.map(row => row.link)).toEqual(ids.map(id => `🔗 https://suno.com/song/${id}`));
-        const createIndex = page.click.mock.calls.findIndex(([s]) => s.includes('Create song'));
-        expect(page.readNetworkCapture.mock.invocationCallOrder[0]).toBeLessThan(page.click.mock.invocationCallOrder[createIndex]);
+        expect(page.readNetworkCapture.mock.invocationCallOrder[0]).toBeLessThan(page.nativeClick.mock.invocationCallOrder[0]);
+        expect(mocks.poll).toHaveBeenCalledTimes(2);
     });
     it('continues into the existing download path for the same clip ids', async () => {
         const page = browser();
@@ -133,6 +146,11 @@ describe('Suno native Create fallback', () => {
     it('refuses when capture cannot be armed', async () => {
         const page = browser({ capture: false });
         await expect(generateCommand.func(page, options)).rejects.toThrow('no generation was submitted');
+        expect(createClicks(page)).toHaveLength(0);
+    });
+    it('never clicks through an overlay covering Create', async () => {
+        const page = browser({ covered: true });
+        await expect(generateCommand.func(page, options)).rejects.toThrow('covered');
         expect(createClicks(page)).toHaveLength(0);
     });
     it.each([
@@ -159,11 +177,28 @@ describe('Suno native Create fallback', () => {
         expect(mocks.submit).not.toHaveBeenCalled();
     });
     it('preserves submitted ids when later polling fails', async () => {
-        mocks.poll.mockRejectedValue(new Error('poll timeout'));
+        const original = Object.assign(new Error('poll timeout'), { code: 'command_result_unknown' });
+        mocks.poll.mockRejectedValue(original);
         const page = browser();
-        await expect(generateCommand.func(page, options)).rejects.toThrow(`Suno submitted ${ids.join(', ')}`);
+        const error = await generateCommand.func(page, options).catch(e => e);
+        expect(error.message).toContain(`Suno submitted ${ids.join(', ')}`);
+        expect(error.cause).toBe(original);
         expect(createClicks(page)).toHaveLength(1);
         expect(mocks.submit).not.toHaveBeenCalled();
+    });
+    it('retains the unknown-outcome cause and never dispatches a second release after an acknowledged-lost click', async () => {
+        const page = browser({ clickError: true });
+        const error = await generateCommand.func(page, options).catch(e => e);
+        expect(error.cause?.code).toBe('command_result_unknown');
+        expect(createClicks(page)).toHaveLength(1);
+        expect(page.nativeClick).toHaveBeenCalledTimes(1);
+        expect(mocks.submit).not.toHaveBeenCalled();
+    });
+    it('rejects an optimistic DOM title that was not saved by the server', async () => {
+        const page = browser({ saveServerTitle: false });
+        await expect(generateCommand.func(page, options)).rejects.toThrow('server did not confirm');
+        expect(createClicks(page)).toHaveLength(1);
+        expect(mocks.download).not.toHaveBeenCalled();
     });
     it('reports existing ids when title persistence fails, not a new generation request', async () => {
         const page = browser({ saveTitle: false });
