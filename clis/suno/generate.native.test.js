@@ -22,7 +22,7 @@ const nativeRequest = { generation_type: 'TEXT', mv: 'chirp-hawk', prompt: '', t
 
 // Browser-shaped fixture executes the production DOM reads, form preparation,
 // click/capture orchestration and title persistence, without a paid request.
-function browser({ model = 'v6', capture = true, body, request, entry = {}, challenge = false, noRows = false, clickError = false, saveTitle = true, saveServerTitle = true, covered = false, emptyForm = false, replayCreate = false, storageUnavailable = false, delayedCapture = false, delayedRequestCapture = false } = {}) {
+function browser({ model = 'v6', capture = true, body, request, entry = {}, challenge = false, noRows = false, clickError = false, saveTitle = true, saveServerTitle = true, covered = false, emptyForm = false, replayCreate = false, storageUnavailable = false, delayedCapture = false, delayedRequestCapture = false, lateRequestCapture = false } = {}) {
     const dom = new JSDOM(`<button role="tab" aria-label="Simple" aria-selected="false"></button>
       <button role="tab" aria-label="Advanced" aria-selected="false"></button>
       <textarea rows="1">previous prompt</textarea>
@@ -75,9 +75,11 @@ function browser({ model = 'v6', capture = true, body, request, entry = {}, chal
                 url: 'https://studio-api-prod.suno.com/api/generate/v2-web/', method: 'POST', requestId: 'request-1', responseStatus: 200,
                 timestamp: 1,
                 requestBodyKind: 'string',
-                requestBodyPreview: delayedRequestCapture && captureReads === 1 ? '' : JSON.stringify(request || nativeRequest),
+                requestBodyPreview: (delayedRequestCapture && captureReads === 1) || (lateRequestCapture && captureReads <= 2)
+                    ? '' : JSON.stringify(request || nativeRequest),
                 responsePreview: delayedCapture && captureReads === 1 ? undefined : JSON.stringify(body || { clips: clips() }),
-                captureComplete: !(delayedCapture || delayedRequestCapture) || captureReads > 1,
+                captureComplete: lateRequestCapture ? (captureReads > 2 ? true : undefined) :
+                    !(delayedCapture || delayedRequestCapture) || captureReads > 1,
                 ...entry,
             }];
         }),
@@ -177,6 +179,13 @@ describe('Suno native Create fallback', () => {
         expect(rows).toHaveLength(2);
         expect(createClicks(page)).toHaveLength(1);
         expect(page.readNetworkCapture).toHaveBeenCalledTimes(4);
+    });
+    it('does not treat a new-extension response as complete before its request body arrives', async () => {
+        const page = browser({ lateRequestCapture: true });
+        const rows = await generateCommand.func(page, options);
+        expect(rows).toHaveLength(2);
+        expect(createClicks(page)).toHaveLength(1);
+        expect(page.readNetworkCapture).toHaveBeenCalledTimes(5);
     });
     it.each(['stable IDs', 'legacy captures'])('detects two POSTs with the same timestamp: %s', async kind => {
         const page = browser();

@@ -304,7 +304,7 @@ export async function submitSunoNative(page, payload, timeout) {
             }
         };
         const settled = entry => entry.captureComplete === true ||
-            (entry.captureComplete === undefined && typeof entry.responsePreview === 'string');
+            (!entry.requestId && entry.captureComplete === undefined && typeof entry.responsePreview === 'string');
         do {
             absorb(await page.readNetworkCapture({ retainIncomplete: true }));
             if ([...captured.values()].some(settled)) {
