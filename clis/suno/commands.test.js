@@ -11,6 +11,7 @@ vi.mock('./utils.js', () => ({
     SUNO_DOMAIN: 'suno.com',
     SUNO_URL: 'https://suno.com',
     ensureSunoSession: mocks.ensureSunoSession,
+    sunoHeadersJs: () => '{}',
     checkSunoCaptcha: mocks.checkSunoCaptcha,
     requireNonNegativeInt: (value) => {
         const n = Number(value);

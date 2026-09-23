@@ -57,7 +57,7 @@ export const statusCommand = cli({
             Plan: session.planKey,
             Credits: String(session.totalCreditsAvailable),
             Monthly: `${b.monthlyRemaining}/${b.monthlyLimit}`,
-            Captcha: captcha?.required === true ? 'Required (solve in UI)' : 'Not required',
+            Captcha: captcha?.required === true ? 'Required (Create UI; may be automatic)' : 'Not required',
         }];
     },
 });

@@ -2,7 +2,7 @@
 
 **Mode**: 🔐 Browser · **Domain**: `suno.com`
 
-Generate music with [Suno](https://suno.com) (V5.5 `chirp-fenix` by default) and download MP3 / M4A / WAV / cover / metadata via the user's logged-in Chrome session. Uses the `/api/generate/v2-web/` schema with Clerk Bearer auth + the `browser-token` / `device-id` headers Suno added in 2026-05.
+Generate music with [Suno](https://suno.com) (v6, v6-wild, or v6-mini) and download MP3 / M4A / WAV / cover / metadata via the user's logged-in Chrome session. The adapter reads the model's API key and account entitlement from `/api/billing/info/`, then uses `/api/generate/v2-web/` or the official Create form when webpage verification is required.
 
 ## Commands
 
@@ -58,12 +58,12 @@ opencli suno download a1b2c3d4-1111-2222-3333-444444444444 \
 | `--negative-tags` | `generate` | Custom-mode style exclusions (e.g. `"no vocals, no autotune"`). |
 | `--title` | `generate` | Song title (default: auto-derived from prompt) |
 | `--instrumental` | `generate` | No vocals (default: `false`) |
-| `--model` | `generate` | `chirp-fenix` (V5.5, default), `chirp-bluejay` (V4.5+), `chirp-v4`, `chirp-v3-5` |
+| `--model` | `generate` | `v6` (Pro/Premier), `v6-wild` (Pro/Premier), `v6-mini` (all plans). Default: account default. |
 | `--weirdness` | `generate` | Creative weirdness slider, `0..1` (default: `0.5`) |
 | `--style-weight` | `generate` | Style adherence slider, `0..1` (default: `0.5`) |
 | `--timeout` | `generate` | Max seconds to wait for both clips to finish (default: `300`) |
 | `--sd` | `generate` | Skip download; only print clip ids and Suno URLs |
-| `--via-ui` | `generate` | Explicitly use the official Simple/V5.5/default-slider Create form, even if verification is not currently required. Uses the same single-shot guard and result checks as the automatic verification fallback. |
+| `--via-ui` | `generate` | Use the official Create form even when verification is not currently required. Useful when the direct API intermittently asks for webpage verification. |
 | `clip` | `download` | Clip UUID or `https://suno.com/song/<id>` URL (positional, required) |
 | `--limit` | `list` | Max clips to return (default: `20`) |
 | `--page` | `list` | Pagination offset, 0-based (default: `0`) |
@@ -74,16 +74,16 @@ opencli suno download a1b2c3d4-1111-2222-3333-444444444444 \
 ## Behavior
 
 - **Two clips per generation.** Suno always returns 2 candidates per request (`A` and `B`). The adapter downloads both so the caller can A/B audition.
-- **Paid-download guard.** `wav` is a paid download (Suno charges per `billing/clips/{id}/download/` call). Both `generate` and `download` skip `wav` by default and require `--confirm-paid true`. Skipped formats appear in the result row as `skipped(needs --confirm-paid):wav` rather than silently dropping.
+- **Download guard and quota.** `wav` is an extra paid download (Suno charges per `billing/clips/{id}/download/` call). Both `generate` and `download` skip `wav` by default and require `--confirm-paid true`. Skipped formats appear as `skipped(needs --confirm-paid):wav`. Standard downloads are also subject to [Suno's plan limits](https://suno.com/blog/suno-updates-tos).
 - **Credit pre-check.** `generate` reads `/api/billing/info/` first and refuses to submit when total credits (monthly remaining + packs + leftover) are below `10` — no wasted requests.
-- **Webpage verification.** `generate` and `status` hit `/api/c/check`. `required=true` does not necessarily mean a human CAPTCHA: the Create page may complete verification itself. For Simple mode with V5.5 and default sliders, `generate` uses the native Create form, clicks once, and binds the captured response to the submitted description, instrumental flag, model, and two new clip ids. It then saves the requested title through the official inline editor and continues polling/downloading those clips. No verification tokens are extracted, fabricated, or replayed.
-- **Fallback limits and uncertain writes.** The verification fallback does not yet map Custom lyrics, other models, or nondefault sliders; these fail before submitting instead of silently ignoring options. A visible human challenge is left for the user. Create uses the official DOM button with an invocation-specific, read-back-verified `sessionStorage` guard: even if browser execution is repeated after navigation, the same invocation cannot click again. An uncertain result is never automatically retried through Create or the API. Inspect `opencli suno list` / the retained Create tab and download existing ids before considering another generation. Completing a challenge once does not imply future token-free API requests will work. Use `--keep-tab true --window foreground` when a human handoff may be needed.
+- **Webpage verification.** `generate` and `status` hit `/api/c/check`. `required=true` does not necessarily mean a human CAPTCHA: the Create page may complete verification itself. The fallback prepares the requested v6 model and Simple or Advanced inputs, clicks Create once, binds the response to the new clips, then verifies the requested title and continues polling/downloading. For a Simple instrumental request, the current Create UI has no instrumental toggle, so the fallback uses Advanced with the description as styles and empty lyrics. No verification tokens are extracted, fabricated, or replayed.
+- **Fallback limits and uncertain writes.** Advanced sliders use 1% steps; values between those steps fail before submission. A visible human challenge is left for the user. Both the direct API and Create paths use invocation-specific `sessionStorage` guards so browser execution cannot submit twice. An uncertain result is never automatically retried. Inspect `opencli suno list` / the retained Create tab before another generation; if the direct API was clearly rejected by verification, use `--via-ui true` instead of manually making a sacrificial song. Use `--keep-tab true --window foreground` when a human handoff may be needed.
 - **File naming.** `<sanitized-title>_<first-8-of-clip-uuid>.<ext>`, e.g. `Night Rain_a1b2c3d4.mp3`. A sibling `.json` carries the complete clip metadata from `/api/feed/v3` for downstream tooling.
 - **Stems (12-track separation)** are not yet wired — the schema is known (`task: gen_stem`, `stem_type_id: 91`, `stem_task: twelve`) but stems are a paid extension that warrants its own command surface.
 
 ## Auth notes
 
-The Suno studio API (`studio-api-prod.suno.com`) requires three things on every request: a Clerk JWT, an anti-replay `browser-token`, and a persistent `device-id`. The OpenCLI bridge's `credentials: 'include'` cross-origin fetch drops Suno's session cookie due to third-party-cookie isolation in the evaluate context, so this adapter explicitly reads `await window.Clerk.session.getToken()` and forwards it as `Authorization: Bearer`. `browser-token` is generated per request (a base64-encoded `{ timestamp }` object) and `device-id` is read from the `suno_device_id` cookie that Suno's frontend writes on first load.
+The Suno studio API (`studio-api-prod.suno.com`) requires a session JWT, an anti-replay `browser-token`, and a persistent `device-id`. The OpenCLI bridge's `credentials: 'include'` cross-origin fetch can omit Suno's session cookie, so the adapter reads the first-party `__session` cookie (falling back to the older Clerk runtime when available) and forwards it as `Authorization: Bearer`. `browser-token` is generated per request (a base64-encoded `{ timestamp }` object); `device-id` comes from the `suno_device_id` cookie.
 
 ## Prerequisites
 
