@@ -19,6 +19,7 @@ import {
     ensureSunoSession,
     parseSunoBillingInfo,
     submitSunoGeneration,
+    waitForSunoSessionToken,
 } from './utils.js';
 
 describe('suno utils — parseFormats', () => {
@@ -262,6 +263,17 @@ describe('suno utils — parseSunoBillingInfo', () => {
 });
 
 describe('suno utils — ensureSunoSession typed failures', () => {
+    it('waits for a delayed legacy Clerk runtime', async () => {
+        let checks = 0;
+        let waits = 0;
+        const page = {
+            evaluate: async () => ++checks === 3,
+            wait: async () => { waits++; },
+        };
+        expect(await waitForSunoSessionToken(page)).toBe(true);
+        expect(checks).toBe(3);
+        expect(waits).toBe(2);
+    });
     function createSessionPage(sessionCheckResult) {
         const evaluate = async (script) => {
             if (script.includes('querySelectorAll')) return undefined;
@@ -331,6 +343,20 @@ describe('suno utils — model + format exports', () => {
 });
 
 describe('suno direct API single-shot submission', () => {
+    it('uses a mounted legacy Clerk token when no first-party cookie exists', async () => {
+        const dom = new JSDOM('', { runScripts: 'outside-only', url: 'https://suno.com/create' });
+        dom.window.Clerk = { session: { getToken: async () => 'legacy.jwt' } };
+        dom.window.fetch = async (_url, request) => {
+            expect(request.headers.Authorization).toBe('Bearer legacy.jwt');
+            return { ok: true, status: 200, text: async () => JSON.stringify({ clips: [{ id: 'clip-a' }] }) };
+        };
+        const page = { evaluate: js => dom.window.eval(js) };
+        const result = await submitSunoGeneration(page, { mode: 'simple', model: 'chirp-hawk', description: 'test',
+            makeInstrumental: false, weirdness: 0.5, styleWeight: 0.5,
+            userTier: 'plan', createSessionToken: 'session', transactionUuid: 'legacy-transaction', deviceId: 'device' });
+        expect(result.clips).toHaveLength(1);
+        dom.window.close();
+    });
     it('never repeats a POST when page.evaluate re-executes after the first write', async () => {
         const dom = new JSDOM('', { runScripts: 'outside-only', url: 'https://suno.com/create' });
         dom.window.document.cookie = '__session=header.payload.signature';

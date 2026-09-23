@@ -146,7 +146,9 @@ async function selectNativeModel(page, name) {
     if (!opened) throw new CommandExecutionError('Suno model picker is unavailable; no generation was submitted.');
     await page.wait(0.2);
     const selected = await page.evaluate(`(() => {
-        const items = Array.from(document.querySelectorAll('[role="menuitemradio"]')).filter(e => e.innerText.trim().split(String.fromCharCode(10))[0] === ${JSON.stringify(name)});
+        const visible = e => e.getClientRects().length && getComputedStyle(e).visibility !== 'hidden';
+        const items = Array.from(document.querySelectorAll('[role="menuitemradio"]')).filter(e =>
+            visible(e) && e.innerText.trim().split(String.fromCharCode(10))[0] === ${JSON.stringify(name)});
         if (items.length !== 1) return false;
         items[0].click(); return true;
     })()`);

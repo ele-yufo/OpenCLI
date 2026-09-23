@@ -1,6 +1,6 @@
 import { AuthRequiredError, CommandExecutionError } from '@jackwener/opencli/errors';
 import { registerSiteAuthCommands } from '../_shared/site-auth.js';
-import { STUDIO_API, SUNO_URL, getSunoDeviceId, sunoHeadersJs, unwrapEvaluateResult } from './utils.js';
+import { STUDIO_API, SUNO_URL, getSunoDeviceId, sunoHeadersJs, unwrapEvaluateResult, waitForSunoSessionToken } from './utils.js';
 
 async function hasSunoSessionCookie(page) {
   const cookies = await page.getCookies({ url: 'https://suno.com' });
@@ -11,6 +11,9 @@ async function hasSunoSessionCookie(page) {
 
 async function verifySunoIdentity(page) {
   await page.goto(SUNO_URL);
+  if (!await waitForSunoSessionToken(page)) {
+    throw new AuthRequiredError('suno.com', 'Suno session did not become ready');
+  }
   const deviceId = await getSunoDeviceId(page);
   const probe = unwrapEvaluateResult(await page.evaluate(`(async () => {
     try {

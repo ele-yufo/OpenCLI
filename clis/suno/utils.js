@@ -176,6 +176,16 @@ export function parseSunoBillingInfo(data) {
     };
 }
 
+export async function waitForSunoSessionToken(page) {
+    // Recent Suno pages expose a first-party JWT; older pages mount Clerk later.
+    for (let i = 0; i < 20; i += 1) {
+        const ready = unwrapEvaluateResult(await page.evaluate(`!!(document.cookie.split(';').some(s => s.trim().startsWith('__session=')) || window.Clerk?.session)`));
+        if (ready) return true;
+        await page.wait(0.5);
+    }
+    return false;
+}
+
 export async function ensureSunoSession(page) {
     await page.goto(`${SUNO_URL}/me`, { settleMs: 2000 });
     // OneTrust consent banner can block the page; dismiss it if present.
@@ -184,13 +194,7 @@ export async function ensureSunoSession(page) {
         if (btn) btn.click();
     })()`);
 
-    // Recent Suno pages expose the session JWT as a first-party cookie rather
-    // than window.Clerk; older pages still use the Clerk runtime.
-    for (let i = 0; i < 20; i += 1) {
-        const ready = unwrapEvaluateResult(await page.evaluate(`!!(document.cookie.split(';').some(s => s.trim().startsWith('__session=')) || window.Clerk?.session)`));
-        if (ready) break;
-        await page.wait(0.5);
-    }
+    await waitForSunoSessionToken(page);
 
     const deviceId = await getSunoDeviceId(page);
     const result = unwrapEvaluateResult(await page.evaluate(`(async () => {
