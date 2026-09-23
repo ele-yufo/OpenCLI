@@ -138,7 +138,8 @@ async function selectNativeModel(page, name) {
     if (state.models.length !== 1) throw new CommandExecutionError('Suno model picker changed; no generation was submitted.');
     if (state.models[0] === name) return;
     const opened = await page.evaluate(`(() => {
-        const buttons = Array.from(document.querySelectorAll('button[aria-haspopup="menu"]')).filter(e => /^v[0-9]/.test(e.innerText.trim()));
+        const visible = e => e.getClientRects().length && getComputedStyle(e).visibility !== 'hidden';
+        const buttons = Array.from(document.querySelectorAll('button[aria-haspopup="menu"]')).filter(e => visible(e) && /^v[0-9]/.test(e.innerText.trim()));
         if (buttons.length !== 1 || buttons[0].disabled) return false;
         buttons[0].click(); return true;
     })()`);
@@ -440,13 +441,10 @@ export const generateCommand = cli({
             );
         }
         const deviceId = session.deviceId;
-        const captcha = await checkSunoCaptcha(page, deviceId);
-        if (!captcha?.ok) {
-            throw new CommandExecutionError(
-                `Suno captcha pre-flight failed${captcha?.status ? ` (HTTP ${captcha.status})` : ''}.`,
-                `Open ${SUNO_URL}/create in Chrome and verify the account is ready, then retry.`,
-            );
-        }
+        const forceNative = normalizeBooleanFlag(kwargs['via-ui']);
+        // A failed pre-flight is not proof that the official Create page cannot
+        // complete verification. Never let it block an explicitly selected UI path.
+        const captcha = forceNative ? null : await checkSunoCaptcha(page, deviceId).catch(() => null);
         if (session.totalCreditsAvailable < 10) {
             const b = session.breakdown;
             throw new CommandExecutionError(
@@ -474,7 +472,7 @@ export const generateCommand = cli({
             transactionUuid,
             deviceId,
         };
-        const useNative = captcha.required || normalizeBooleanFlag(kwargs['via-ui']);
+        const useNative = forceNative || captcha?.ok !== true || captcha.required === true;
         const submission = useNative
             ? await submitSunoNative(page, payload, timeout)
             : await submitSunoGeneration(page, payload);

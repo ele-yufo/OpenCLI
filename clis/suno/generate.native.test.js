@@ -29,7 +29,7 @@ function browser({ model = 'v6', capture = true, body, request, entry = {}, chal
       <div role="slider" aria-label="Weirdness" aria-valuenow="50" tabindex="0"></div>
       <div role="slider" aria-label="Style Influence" aria-valuenow="50" tabindex="0"></div>
       <button aria-label="Clear all form inputs"></button>
-      <button aria-haspopup="menu">${model}</button>
+      <button aria-haspopup="menu">${model}</button><button aria-haspopup="menu" hidden>v6-mini</button>
       <div id="model-menu" hidden><div role="menuitemradio">v6</div><div role="menuitemradio">v6-wild</div><div role="menuitemradio">v6-mini</div></div>
       <button aria-label="Create song"></button><main></main>`, { runScripts: 'outside-only', url: 'https://suno.com/create' });
     const w = dom.window;

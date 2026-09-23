@@ -365,6 +365,20 @@ describe('suno utils — pollSunoClips', () => {
         expect(await pollSunoClips(page, ['clip-a'], 2, 'device-id', 0)).toHaveLength(1);
         expect(calls).toBe(2);
     });
+    it.each(['75', 'http-date'])('respects a long Retry-After %s', async format => {
+        const retryAfter = format === 'http-date' ? new Date(Date.now() + 60_000).toUTCString() : '75';
+        let calls = 0;
+        const waits = [];
+        const page = {
+            evaluate: async () => ++calls === 1
+                ? { status: 429, retryAfter, body: null }
+                : { status: 200, body: { clips: [{ id: 'clip-a', status: 'complete' }] } },
+            wait: async options => { waits.push(options.time); },
+        };
+        await pollSunoClips(page, ['clip-a'], 120, 'device-id');
+        expect(waits[0]).toBeGreaterThan(format === 'http-date' ? 55 : 74);
+        expect(calls).toBe(2);
+    });
     it('fails typed on malformed feed JSON while polling generation status', async () => {
         const page = {
             evaluate: async () => ({ status: 200, body: null }),

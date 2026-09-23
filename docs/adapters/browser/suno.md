@@ -34,8 +34,9 @@ opencli suno generate \
   --negative-tags "vocals, drums" \
   --title "Night Rain"
 
-# Dial in the web UI's "Weirdness" + "Style Influence" sliders
-opencli suno generate "post-rock crescendo" --weirdness 0.74 --style-weight 0.57
+# Dial in the web UI's "Weirdness" + "Style Influence" sliders in Advanced mode
+opencli suno generate --lyrics "[Verse] The lights are fading" \
+  --tags "post-rock crescendo" --weirdness 0.74 --style-weight 0.57
 
 # Generate but skip the download (you only want the Suno links + clip ids)
 opencli suno generate "ambient drone" --sd true
@@ -76,8 +77,8 @@ opencli suno download a1b2c3d4-1111-2222-3333-444444444444 \
 - **Two clips per generation.** Suno always returns 2 candidates per request (`A` and `B`). The adapter downloads both so the caller can A/B audition.
 - **Download guard and quota.** `wav` is an extra paid download (Suno charges per `billing/clips/{id}/download/` call). Both `generate` and `download` skip `wav` by default and require `--confirm-paid true`. Skipped formats appear as `skipped(needs --confirm-paid):wav`. Standard downloads are also subject to [Suno's plan limits](https://suno.com/blog/suno-updates-tos).
 - **Credit pre-check.** `generate` reads `/api/billing/info/` first and refuses to submit when total credits (monthly remaining + packs + leftover) are below `10` — no wasted requests.
-- **Webpage verification.** `generate` and `status` hit `/api/c/check`. `required=true` does not necessarily mean a human CAPTCHA: the Create page may complete verification itself. The fallback prepares the requested v6 model and Simple or Advanced inputs, clicks Create once, binds the response to the new clips, then verifies the requested title and continues polling/downloading. For a Simple instrumental request, the current Create UI has no instrumental toggle, so the fallback uses Advanced with the description as styles and empty lyrics. No verification tokens are extracted, fabricated, or replayed.
-- **Fallback limits and uncertain writes.** Advanced sliders use 1% steps; values between those steps fail before submission. A visible human challenge is left for the user. Both the direct API and Create paths use invocation-specific `sessionStorage` guards so browser execution cannot submit twice. An uncertain result is never automatically retried. Inspect `opencli suno list` / the retained Create tab before another generation; if the direct API was clearly rejected by verification, use `--via-ui true` instead of manually making a sacrificial song. Use `--keep-tab true --window foreground` when a human handoff may be needed.
+- **Webpage verification.** `status` and default `generate` check `/api/c/check`; `--via-ui true` uses Create without depending on that probe. `required=true` or an unavailable check routes default generation to Create, where the page may complete verification itself. The fallback prepares the requested v6 model and Simple or Advanced inputs, clicks Create once, binds the response to the new clips, then verifies the requested title and continues polling/downloading. For a Simple instrumental request, the current Create UI has no instrumental toggle, so the fallback uses Advanced with the description as styles and empty lyrics. No verification tokens are extracted, fabricated, or replayed.
+- **Fallback limits and uncertain writes.** Simple vocal mode has no slider controls: if webpage verification is required, a Simple prompt with nondefault sliders fails before submission; use Advanced lyrics and styles instead. Advanced sliders use 1% steps; values between those steps also fail before submission. A visible human challenge is left for the user. Both the direct API and Create paths use invocation-specific `sessionStorage` guards so browser execution cannot submit twice. An uncertain result is never automatically retried. Inspect `opencli suno list` / the retained Create tab before another generation; if the direct API was clearly rejected by verification, use `--via-ui true` instead of manually making a sacrificial song. Use `--keep-tab true --window foreground` when a human handoff may be needed.
 - **File naming.** `<sanitized-title>_<first-8-of-clip-uuid>.<ext>`, e.g. `Night Rain_a1b2c3d4.mp3`. A sibling `.json` carries the complete clip metadata from `/api/feed/v3` for downstream tooling.
 - **Stems (12-track separation)** are not yet wired — the schema is known (`task: gen_stem`, `stem_type_id: 91`, `stem_task: twelve`) but stems are a paid extension that warrants its own command surface.
 

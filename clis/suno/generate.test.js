@@ -124,12 +124,18 @@ describe('suno generate argument validation', () => {
         expect(mocks.submitSunoGeneration).not.toHaveBeenCalled();
     });
 
-    it('refuses to submit when captcha pre-flight fails', async () => {
+    it('uses Create instead of the direct API when captcha pre-flight fails', async () => {
         mocks.checkSunoCaptcha.mockResolvedValue({ ok: false, status: 500 });
-        await expect(generateCommand.func(createPage(), { prompt: 'foo', sd: true, timeout: 60 })).rejects.toMatchObject({
-            code: 'COMMAND_EXEC',
-            message: expect.stringContaining('captcha pre-flight failed'),
-        });
+        const page = createPage();
+        await expect(generateCommand.func(page, { prompt: 'foo', sd: true, timeout: 60 })).rejects.toMatchObject({ code: 'COMMAND_EXEC' });
+        expect(page.goto).toHaveBeenCalledWith('https://suno.com/create');
+        expect(mocks.submitSunoGeneration).not.toHaveBeenCalled();
+    });
+    it('skips the captcha probe when --via-ui is explicit', async () => {
+        const page = createPage();
+        await expect(generateCommand.func(page, { prompt: 'foo', 'via-ui': true, sd: true, timeout: 60 })).rejects.toMatchObject({ code: 'COMMAND_EXEC' });
+        expect(mocks.checkSunoCaptcha).not.toHaveBeenCalled();
+        expect(page.goto).toHaveBeenCalledWith('https://suno.com/create');
         expect(mocks.submitSunoGeneration).not.toHaveBeenCalled();
     });
 });

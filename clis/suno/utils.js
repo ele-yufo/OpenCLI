@@ -406,7 +406,13 @@ export async function pollSunoClips(page, clipIds, timeoutSeconds, deviceId, pol
         if (result.status === 429) {
             rateLimited = true;
             const seconds = Number(result.retryAfter);
-            await page.wait({ time: Number.isFinite(seconds) && seconds > 0 ? Math.min(seconds, 30) : Math.min(pollSeconds * 2, 30) });
+            const date = Date.parse(result.retryAfter);
+            const delay = Number.isFinite(seconds) && seconds > 0 ? seconds :
+                Number.isFinite(date) && date > Date.now() ? (date - Date.now()) / 1000 :
+                    Math.min(pollSeconds * 2, 30);
+            const remaining = (deadline - Date.now()) / 1000;
+            if (remaining <= 0) break;
+            await page.wait({ time: Math.min(Math.max(delay, 1), remaining) });
             continue;
         }
         if (result.status < 200 || result.status >= 300) {

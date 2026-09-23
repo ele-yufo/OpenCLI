@@ -92,6 +92,15 @@ describe('suno status', () => {
         const out = await statusCommand.func(createPage());
         expect(out[0].Captcha).toContain('Required');
     });
+    it('does not call a failed captcha probe not-required', async () => {
+        mocks.ensureSunoSession.mockResolvedValue({
+            planKey: 'pro', totalCreditsAvailable: 100,
+            breakdown: { monthlyRemaining: 100, monthlyLimit: 2500 }, deviceId: 'device-uuid',
+        });
+        mocks.checkSunoCaptcha.mockResolvedValue({ ok: false, status: 429 });
+        const out = await statusCommand.func(createPage());
+        expect(out[0].Captcha).toBe('Unknown (check failed)');
+    });
 });
 
 describe('suno list', () => {
