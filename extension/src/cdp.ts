@@ -21,6 +21,7 @@ const CDP_REQUEST_BODY_CAPTURE_LIMIT = 1 * 1024 * 1024;
 
 type NetworkCaptureEntry = {
   kind: 'cdp';
+  requestId: string;
   url: string;
   method: string;
   requestHeaders?: Record<string, string>;
@@ -35,6 +36,8 @@ type NetworkCaptureEntry = {
   responseBodyFullSize?: number;
   responseBodyTruncated?: boolean;
   captureComplete?: boolean;
+  requestBodyPending?: boolean;
+  responseFinished?: boolean;
   timestamp: number;
 };
 
@@ -756,6 +759,7 @@ function getOrCreateNetworkCaptureEntry(tabId: number, requestId: string, fallba
   if (!shouldCaptureUrl(url, state.patterns)) return null;
   const entry: NetworkCaptureEntry = {
     kind: 'cdp',
+    requestId,
     url,
     method: fallback?.method || 'GET',
     requestHeaders: fallback?.requestHeaders || {},
@@ -887,6 +891,7 @@ export function registerListeners(): void {
           entry.requestBodyFullSize = fullSize;
           entry.requestBodyTruncated = truncated;
         }
+        entry.requestBodyPending = true;
         try {
           const postData = await sendDebuggerCommand({ tabId }, 'Network.getRequestPostData', { requestId }) as { postData?: string };
           if (postData?.postData) {
@@ -900,6 +905,9 @@ export function registerListeners(): void {
           }
         } catch {
           // Optional; some requests do not expose postData.
+        } finally {
+          entry.requestBodyPending = false;
+          if (entry.responseFinished) entry.captureComplete = true;
         }
       }
       return;
@@ -949,8 +957,10 @@ export function registerListeners(): void {
         }
       } catch {
         // Optional; bodies are unavailable for some requests (e.g. uploads).
+      } finally {
+        entry.responseFinished = true;
+        if (!entry.requestBodyPending) entry.captureComplete = true;
       }
-      entry.captureComplete = true;
       return;
     }
 
@@ -959,7 +969,10 @@ export function registerListeners(): void {
       const stateEntryIndex = state.requestToIndex.get(requestId);
       if (stateEntryIndex === undefined) return;
       const entry = state.entries[stateEntryIndex];
-      if (entry) entry.captureComplete = true;
+      if (entry) {
+        entry.responseFinished = true;
+        if (!entry.requestBodyPending) entry.captureComplete = true;
+      }
     }
   });
 }

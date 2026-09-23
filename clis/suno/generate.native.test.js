@@ -22,7 +22,7 @@ const nativeRequest = { generation_type: 'TEXT', mv: 'chirp-hawk', prompt: '', t
 
 // Browser-shaped fixture executes the production DOM reads, form preparation,
 // click/capture orchestration and title persistence, without a paid request.
-function browser({ model = 'v6', capture = true, body, request, entry = {}, challenge = false, noRows = false, clickError = false, saveTitle = true, saveServerTitle = true, covered = false, emptyForm = false, replayCreate = false, storageUnavailable = false, delayedCapture = false } = {}) {
+function browser({ model = 'v6', capture = true, body, request, entry = {}, challenge = false, noRows = false, clickError = false, saveTitle = true, saveServerTitle = true, covered = false, emptyForm = false, replayCreate = false, storageUnavailable = false, delayedCapture = false, delayedRequestCapture = false } = {}) {
     const dom = new JSDOM(`<button role="tab" aria-label="Simple" aria-selected="false"></button>
       <button role="tab" aria-label="Advanced" aria-selected="false"></button>
       <textarea rows="1">previous prompt</textarea>
@@ -68,15 +68,19 @@ function browser({ model = 'v6', capture = true, body, request, entry = {}, chal
             return value;
         }),
         startNetworkCapture: vi.fn(async () => capture),
-        readNetworkCapture: vi.fn(async () => submitted ? [{
-            url: 'https://studio-api-prod.suno.com/api/generate/v2-web/', method: 'POST', responseStatus: 200,
-            timestamp: 1,
-            requestBodyKind: 'string',
-            requestBodyPreview: JSON.stringify(request || nativeRequest),
-            responsePreview: delayedCapture && ++captureReads === 1 ? undefined : JSON.stringify(body || { clips: clips() }),
-            captureComplete: !delayedCapture || captureReads > 1,
-            ...entry,
-        }] : []),
+        readNetworkCapture: vi.fn(async () => {
+            if (!submitted) return [];
+            captureReads++;
+            return [{
+                url: 'https://studio-api-prod.suno.com/api/generate/v2-web/', method: 'POST', requestId: 'request-1', responseStatus: 200,
+                timestamp: 1,
+                requestBodyKind: 'string',
+                requestBodyPreview: delayedRequestCapture && captureReads === 1 ? '' : JSON.stringify(request || nativeRequest),
+                responsePreview: delayedCapture && captureReads === 1 ? undefined : JSON.stringify(body || { clips: clips() }),
+                captureComplete: !(delayedCapture || delayedRequestCapture) || captureReads > 1,
+                ...entry,
+            }];
+        }),
         fillText: vi.fn(async (selector, value) => {
             const targets = w.document.querySelectorAll(selector);
             if (targets.length !== 1) throw new Error('ambiguous fill');
@@ -165,7 +169,31 @@ describe('Suno native Create fallback', () => {
         const rows = await generateCommand.func(page, options);
         expect(rows).toHaveLength(2);
         expect(createClicks(page)).toHaveLength(1);
-        expect(page.readNetworkCapture).toHaveBeenCalledTimes(3);
+        expect(page.readNetworkCapture).toHaveBeenCalledTimes(4);
+    });
+    it('waits for a delayed request body even after the response body arrives', async () => {
+        const page = browser({ delayedRequestCapture: true });
+        const rows = await generateCommand.func(page, options);
+        expect(rows).toHaveLength(2);
+        expect(createClicks(page)).toHaveLength(1);
+        expect(page.readNetworkCapture).toHaveBeenCalledTimes(4);
+    });
+    it.each(['stable IDs', 'legacy captures'])('detects two POSTs with the same timestamp: %s', async kind => {
+        const page = browser();
+        const read = page.readNetworkCapture.bind(page);
+        page.readNetworkCapture = vi.fn(async () => {
+            const entries = await read();
+            if (!entries.length) return entries;
+            const first = { ...entries[0], timestamp: 42 };
+            const second = { ...entries[0], timestamp: 42, requestId: 'request-2' };
+            if (kind === 'legacy captures') {
+                delete first.requestId;
+                delete second.requestId;
+            }
+            return [first, second];
+        });
+        await expect(generateCommand.func(page, options)).rejects.toThrow('expected one generation response');
+        expect(createClicks(page)).toHaveLength(1);
     });
     it('selects v6-wild from the live model menu before one submission', async () => {
         const page = browser({ request: { ...nativeRequest, mv: 'chirp-hawk-wild' },

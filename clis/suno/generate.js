@@ -295,12 +295,24 @@ export async function submitSunoNative(page, payload, timeout) {
         // retain unfinished entries, so poll until their bodies are complete.
         await page.wait({ time: 1 });
         const captured = new Map();
-        do {
-            const entries = await page.readNetworkCapture({ retainIncomplete: true });
+        let legacyEntry = 0;
+        const absorb = entries => {
             for (const entry of entries.filter(e => e?.url === GENERATE_URL && e.method === 'POST')) {
-                captured.set(entry.timestamp ?? 'single', entry);
+                const identity = typeof entry.requestId === 'string' && entry.requestId
+                    ? `id:${entry.requestId}` : `legacy:${legacyEntry++}`;
+                captured.set(identity, entry);
             }
-            if ([...captured.values()].some(e => e.captureComplete || typeof e.responsePreview === 'string')) break;
+        };
+        const settled = entry => entry.captureComplete === true ||
+            (entry.captureComplete === undefined && typeof entry.responsePreview === 'string');
+        do {
+            absorb(await page.readNetworkCapture({ retainIncomplete: true }));
+            if ([...captured.values()].some(settled)) {
+                // Catch a second page-owned POST arriving just after the first.
+                await page.wait({ time: 2 });
+                absorb(await page.readNetworkCapture({ retainIncomplete: true }));
+                break;
+            }
             await page.wait({ time: 0.5 });
         } while (Date.now() < deadline);
         const responses = [...captured.values()];

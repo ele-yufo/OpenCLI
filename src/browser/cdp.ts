@@ -191,7 +191,7 @@ class CDPPage extends CDPBasePage {
   private _networkCapturing = false;
   private _networkCapturePattern = '';
   private _networkEntries: Array<{
-    url: string; method: string; responseStatus?: number;
+    requestId: string; url: string; method: string; responseStatus?: number;
     requestHeaders?: Record<string, string>;
     requestBodyKind?: string;
     requestBodyPreview?: string;
@@ -335,6 +335,7 @@ class CDPPage extends CDPBasePage {
           const rawBody = typeof p.request.postData === 'string' ? p.request.postData : '';
           const bodyTruncated = rawBody.length > CDP_REQUEST_BODY_CAPTURE_LIMIT;
           const entry: (typeof this._networkEntries)[number] = {
+            requestId: p.requestId,
             url: p.request.url,
             method: p.request.method,
             requestHeaders: Object.fromEntries(

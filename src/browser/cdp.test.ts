@@ -156,6 +156,7 @@ describe('CDPBridge cookies', () => {
     releaseBody({ body: '{"clips":[]}', base64Encoded: false });
     const completed = await reading;
     expect(completed[0]).toMatchObject({ responseStatus: 200, responsePreview: '{"clips":[]}', captureComplete: true });
+    expect(completed[0].requestId).toBe('r2');
     expect(await page.readNetworkCapture?.({ retainIncomplete: true })).toEqual([]);
   });
 });

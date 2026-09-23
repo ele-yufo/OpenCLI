@@ -561,6 +561,40 @@ describe('cdp network capture correctness', () => {
     expect(completed).toHaveLength(1);
     expect(completed[0].responsePreview).toBe('{"ok":true}');
     expect(completed[0].captureComplete).toBe(true);
+    expect(completed[0].requestId).toBe('r2');
+    expect(await mod.readNetworkCapture(1, true)).toEqual([]);
+  });
+
+  it('does not drain a response before delayed request post data arrives', async () => {
+    const mock = createNetworkMock();
+    let releasePostData!: (value: unknown) => void;
+    const postData = new Promise(resolve => { releasePostData = resolve; });
+    mock.chrome.debugger.sendCommand = vi.fn(async (_target: unknown, method: string) => {
+      if (method === 'Network.getRequestPostData') return postData;
+      if (method === 'Network.getResponseBody') return { body: '{"clips":[]}', base64Encoded: false };
+      return {};
+    });
+    vi.stubGlobal('chrome', mock.chrome);
+    const mod = await import('./cdp');
+    mod.registerListeners();
+    await mod.startNetworkCapture(1, 'api.example');
+    const requesting = mock.fire('Network.requestWillBeSent', {
+      requestId: 'r3',
+      request: { url: 'https://api.example/generate', method: 'POST', hasPostData: true },
+    });
+    await mock.fire('Network.responseReceived', {
+      requestId: 'r3', response: { url: 'https://api.example/generate', status: 200 },
+    });
+    await mock.fire('Network.loadingFinished', { requestId: 'r3' });
+    const early = await mod.readNetworkCapture(1, true);
+    expect(early[0].responsePreview).toBe('{"clips":[]}');
+    expect(early[0].requestBodyPreview).toBe('');
+    expect(early[0].captureComplete).not.toBe(true);
+    releasePostData({ postData: '{"prompt":"test"}' });
+    await requesting;
+    const completed = await mod.readNetworkCapture(1, true);
+    expect(completed[0].requestBodyPreview).toBe('{"prompt":"test"}');
+    expect(completed[0].captureComplete).toBe(true);
     expect(await mod.readNetworkCapture(1, true)).toEqual([]);
   });
 });
