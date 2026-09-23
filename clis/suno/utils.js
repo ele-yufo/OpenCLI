@@ -2,8 +2,8 @@
  * Suno web (suno.com) browser automation helpers — rewritten for the
  * /api/generate/v2-web/ schema introduced 2026-05.
  *
- * Auth model: Bearer JWT from the first-party `__session` cookie (or the
- * older Clerk runtime when present).
+ * Auth model: refresh via Clerk when its runtime is present, otherwise read
+ * the first-party `__session` JWT.
  *
  * The studio backend lives on `studio-api-prod.suno.com`; the page itself is
  * on `suno.com`. The browser's normal cross-origin cookie-bearing fetch
@@ -114,7 +114,13 @@ export function clampSlider(value, label, def) {
 // ─────────────────────────────────────────────────────────────────────────────
 
 const BROWSER_TOKEN_JS = `JSON.stringify({ token: btoa(JSON.stringify({ timestamp: Date.now() })) })`;
-const SESSION_TOKEN_JS = `(document.cookie.split(';').map(s => s.trim()).find(s => s.startsWith('__session='))?.slice('__session='.length) || (window.Clerk?.session ? await window.Clerk.session.getToken() : ''))`;
+const SESSION_TOKEN_JS = `(await (async () => {
+    try {
+        const refreshed = await window.Clerk?.session?.getToken();
+        if (refreshed) return refreshed;
+    } catch {}
+    return document.cookie.split(';').map(s => s.trim()).find(s => s.startsWith('__session='))?.slice('__session='.length) || '';
+})())`;
 
 /**
  * Build the standard header set used by every studio-api-prod.suno.com call.

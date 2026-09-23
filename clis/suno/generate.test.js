@@ -44,7 +44,9 @@ function createPage() {
     return {
         goto: vi.fn().mockResolvedValue(undefined),
         wait: vi.fn().mockResolvedValue(undefined),
-        evaluate: vi.fn().mockResolvedValue(undefined),
+        click: vi.fn().mockResolvedValue({ clicked: true }),
+        evaluate: vi.fn(async js => js.includes('simple: document.querySelector')
+            ? { simple: false, advanced: false } : undefined),
     };
 }
 

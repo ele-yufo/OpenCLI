@@ -34,6 +34,7 @@ type NetworkCaptureEntry = {
   responsePreview?: string;
   responseBodyFullSize?: number;
   responseBodyTruncated?: boolean;
+  captureComplete?: boolean;
   timestamp: number;
 };
 
@@ -778,12 +779,29 @@ export async function startNetworkCapture(
   });
 }
 
-export async function readNetworkCapture(tabId: number): Promise<NetworkCaptureEntry[]> {
+export async function readNetworkCapture(tabId: number, retainIncomplete = false): Promise<NetworkCaptureEntry[]> {
   const state = networkCaptures.get(tabId);
   if (!state) return [];
-  const entries = state.entries.slice();
-  state.entries = [];
-  state.requestToIndex.clear();
+  // A request can be visible in the page before CDP finishes fetching its
+  // response body. Return a snapshot, but retain unfinished entries so a
+  // later read can observe the completed response instead of losing it.
+  const entries = state.entries.map(entry => ({ ...entry }));
+  if (!retainIncomplete) {
+    state.entries = [];
+    state.requestToIndex.clear();
+    return entries;
+  }
+  const pendingEntries: NetworkCaptureEntry[] = [];
+  const pendingMap = new Map<string, number>();
+  for (const [requestId, index] of state.requestToIndex) {
+    const entry = state.entries[index];
+    if (entry && !entry.captureComplete) {
+      pendingMap.set(requestId, pendingEntries.length);
+      pendingEntries.push(entry);
+    }
+  }
+  state.entries = pendingEntries;
+  state.requestToIndex = pendingMap;
   return entries;
 }
 
@@ -932,6 +950,16 @@ export function registerListeners(): void {
       } catch {
         // Optional; bodies are unavailable for some requests (e.g. uploads).
       }
+      entry.captureComplete = true;
+      return;
+    }
+
+    if (method === 'Network.loadingFailed') {
+      const requestId = String(eventParams?.requestId || '');
+      const stateEntryIndex = state.requestToIndex.get(requestId);
+      if (stateEntryIndex === undefined) return;
+      const entry = state.entries[stateEntryIndex];
+      if (entry) entry.captureComplete = true;
     }
   });
 }

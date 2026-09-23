@@ -84,7 +84,7 @@ opencli suno download a1b2c3d4-1111-2222-3333-444444444444 \
 
 ## Auth notes
 
-The Suno studio API (`studio-api-prod.suno.com`) requires a session JWT, an anti-replay `browser-token`, and a persistent `device-id`. The OpenCLI bridge's `credentials: 'include'` cross-origin fetch can omit Suno's session cookie, so the adapter reads the first-party `__session` cookie (falling back to the older Clerk runtime when available) and forwards it as `Authorization: Bearer`. `browser-token` is generated per request (a base64-encoded `{ timestamp }` object); `device-id` comes from the `suno_device_id` cookie.
+The Suno studio API (`studio-api-prod.suno.com`) requires a session JWT, an anti-replay `browser-token`, and a persistent `device-id`. The OpenCLI bridge's `credentials: 'include'` cross-origin fetch can omit Suno's session cookie, so the adapter refreshes through Clerk when that runtime is present, otherwise reads the first-party `__session` cookie, and forwards the JWT as `Authorization: Bearer`. `browser-token` is generated per request (a base64-encoded `{ timestamp }` object); `device-id` comes from the `suno_device_id` cookie.
 
 ## Prerequisites
 

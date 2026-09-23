@@ -16,10 +16,13 @@ const description = 'Spacious instrumental piano and cello, 60 BPM.';
 const options = { prompt: description, instrumental: true, title: 'Test score', sd: true, timeout: 2 };
 const payload = { mode: 'simple', model: 'chirp-hawk', modelName: 'v6', weirdness: 0.5, styleWeight: 0.5, description, lyrics: '', tags: '', negativeTags: '', makeInstrumental: true, deviceId: 'device-test' };
 const clips = () => ids.map(id => ({ id, title: 'Native title', status: 'complete', model_name: 'chirp-hawk', metadata: { tags: description, prompt: '', negative_tags: '', make_instrumental: true } }));
+const nativeRequest = { generation_type: 'TEXT', mv: 'chirp-hawk', prompt: '', tags: description, negative_tags: '', make_instrumental: true,
+    metadata: { create_mode: 'custom', control_sliders: { aug_creativity: 4 } },
+    cover_clip_id: null, continue_clip_id: null, artist_clip_id: null, persona_id: null, user_uploaded_images_b64: null };
 
 // Browser-shaped fixture executes the production DOM reads, form preparation,
 // click/capture orchestration and title persistence, without a paid request.
-function browser({ model = 'v6', capture = true, body, request, entry = {}, challenge = false, noRows = false, clickError = false, saveTitle = true, saveServerTitle = true, covered = false, emptyForm = false, replayCreate = false, storageUnavailable = false } = {}) {
+function browser({ model = 'v6', capture = true, body, request, entry = {}, challenge = false, noRows = false, clickError = false, saveTitle = true, saveServerTitle = true, covered = false, emptyForm = false, replayCreate = false, storageUnavailable = false, delayedCapture = false } = {}) {
     const dom = new JSDOM(`<button role="tab" aria-label="Simple" aria-selected="false"></button>
       <button role="tab" aria-label="Advanced" aria-selected="false"></button>
       <textarea rows="1">previous prompt</textarea>
@@ -46,6 +49,7 @@ function browser({ model = 'v6', capture = true, body, request, entry = {}, chal
     w.Element.prototype.scrollIntoView = () => {};
     w.document.elementFromPoint = () => covered ? w.document.body : w.document.querySelector('button[aria-label="Create song"]');
     let submitted = false;
+    let captureReads = 0;
     let editing;
     const page = {
         dom,
@@ -66,10 +70,11 @@ function browser({ model = 'v6', capture = true, body, request, entry = {}, chal
         startNetworkCapture: vi.fn(async () => capture),
         readNetworkCapture: vi.fn(async () => submitted ? [{
             url: 'https://studio-api-prod.suno.com/api/generate/v2-web/', method: 'POST', responseStatus: 200,
+            timestamp: 1,
             requestBodyKind: 'string',
-            requestBodyPreview: JSON.stringify(request || { mv: 'chirp-hawk', prompt: '', tags: description, negative_tags: '', make_instrumental: true,
-                metadata: { control_sliders: { weirdness_constraint: 0.5, style_weight: 0.5 } } }),
-            responsePreview: JSON.stringify(body || { clips: clips() }),
+            requestBodyPreview: JSON.stringify(request || nativeRequest),
+            responsePreview: delayedCapture && ++captureReads === 1 ? undefined : JSON.stringify(body || { clips: clips() }),
+            captureComplete: !delayedCapture || captureReads > 1,
             ...entry,
         }] : []),
         fillText: vi.fn(async (selector, value) => {
@@ -79,7 +84,12 @@ function browser({ model = 'v6', capture = true, body, request, entry = {}, chal
             else targets[0].value = value;
             return { verified: (targets[0].hasAttribute('contenteditable') ? targets[0].textContent : targets[0].value) === value };
         }),
-        click: vi.fn(async () => { throw new Error('general click wrapper must not run'); }),
+        click: vi.fn(async selector => {
+            const target = w.document.querySelector(selector);
+            if (!target) throw new Error('native tab click target missing');
+            target.click();
+            return { clicked: true };
+        }),
         nativeClick: vi.fn(async () => { throw new Error('no native click fallback'); }),
         controls: vi.fn(),
         dispatched: vi.fn(),
@@ -150,8 +160,15 @@ beforeEach(() => {
 afterEach(() => vi.useRealTimers());
 
 describe('Suno native Create fallback', () => {
+    it('waits for a delayed capture body without a second Create click', async () => {
+        const page = browser({ delayedCapture: true });
+        const rows = await generateCommand.func(page, options);
+        expect(rows).toHaveLength(2);
+        expect(createClicks(page)).toHaveLength(1);
+        expect(page.readNetworkCapture).toHaveBeenCalledTimes(3);
+    });
     it('selects v6-wild from the live model menu before one submission', async () => {
-        const page = browser({ request: { mv: 'chirp-hawk-wild', prompt: '', tags: description, make_instrumental: true },
+        const page = browser({ request: { ...nativeRequest, mv: 'chirp-hawk-wild' },
             body: { clips: ids.map(id => ({ id, model_name: 'chirp-hawk', metadata: { tags: 'upsampled', prompt: '', make_instrumental: true } })) } });
         const rows = await generateCommand.func(page, { ...options, model: 'v6-wild' });
         expect(rows).toHaveLength(2);
@@ -162,7 +179,7 @@ describe('Suno native Create fallback', () => {
         const lyrics = '[Verse] Adapter proof';
         const tags = 'sparse piano';
         const negative = 'drums';
-        const page = browser({ request: { mv: 'chirp-hawk', prompt: lyrics, tags, negative_tags: negative, make_instrumental: false },
+        const page = browser({ request: { ...nativeRequest, prompt: lyrics, tags, negative_tags: negative, make_instrumental: false },
             body: { clips: ids.map(id => ({ id, model_name: 'chirp-hawk', metadata: { tags, prompt: lyrics, negative_tags: negative, make_instrumental: false } })) } });
         const rows = await generateCommand.func(page, { lyrics, tags, 'negative-tags': negative, title: 'Test score', sd: true, timeout: 2 });
         expect(rows).toHaveLength(2);
@@ -171,7 +188,8 @@ describe('Suno native Create fallback', () => {
         expect(createClicks(page)).toHaveLength(1);
     });
     it('uses the current Simple textarea for a vocal Simple prompt', async () => {
-        const page = browser({ request: { mv: 'chirp-hawk', prompt: description, tags: '', make_instrumental: false },
+        const page = browser({ request: { ...nativeRequest, prompt: '', gpt_description_prompt: description, tags: '', make_instrumental: false,
+            metadata: { create_mode: 'simple', control_sliders: { aug_creativity: 4 } } },
             body: { clips: ids.map(id => ({ id, model_name: 'chirp-hawk', metadata: { gpt_description_prompt: description, make_instrumental: false } })) } });
         const rows = await generateCommand.func(page, { ...options, instrumental: false });
         expect(rows).toHaveLength(2);
@@ -247,7 +265,17 @@ describe('Suno native Create fallback', () => {
         expect(mocks.poll).not.toHaveBeenCalled();
     });
     it('rejects a captured request for the wrong model without retry', async () => {
-        const page = browser({ request: { mv: 'chirp-goose', prompt: '', tags: description, make_instrumental: true } });
+        const page = browser({ request: { ...nativeRequest, mv: 'chirp-goose' } });
+        await expect(generateCommand.func(page, options)).rejects.toThrow('did not match this invocation');
+        expect(createClicks(page)).toHaveLength(1);
+        expect(mocks.poll).not.toHaveBeenCalled();
+    });
+    it.each([
+        { generation_type: 'COVER' },
+        { persona_id: 'another-persona' },
+        { metadata: { create_mode: 'simple', control_sliders: { weirdness_constraint: 0.99 } } },
+    ])('rejects a captured request with unexpected creation controls: %j', async changed => {
+        const page = browser({ request: { ...nativeRequest, ...changed } });
         await expect(generateCommand.func(page, options)).rejects.toThrow('did not match this invocation');
         expect(createClicks(page)).toHaveLength(1);
         expect(mocks.poll).not.toHaveBeenCalled();
@@ -287,7 +315,7 @@ describe('Suno native Create fallback', () => {
         const rows = await generateCommand.func(page, options);
         expect(rows).toHaveLength(2);
         expect(createClicks(page)).toHaveLength(1);
-        expect(page.click).not.toHaveBeenCalled();
+        expect(page.click.mock.calls.every(([selector]) => selector.includes('[role="tab"]'))).toBe(true);
         expect(page.nativeClick).not.toHaveBeenCalled();
         expect(mocks.submit).not.toHaveBeenCalled();
     });

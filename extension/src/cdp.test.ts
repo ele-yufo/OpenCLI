@@ -528,8 +528,12 @@ describe('cdp network capture correctness', () => {
     expect(entries[0].requestBodyKind).toBe('string');
   });
 
-  it('does not create an orphan entry from a response after the request was drained', async () => {
+  it('retains an in-flight entry until its response body is captured', async () => {
     const mock = createNetworkMock();
+    let releaseBody!: (value: unknown) => void;
+    const body = new Promise(resolve => { releaseBody = resolve; });
+    mock.chrome.debugger.sendCommand = vi.fn(async (_target: unknown, method: string) =>
+      method === 'Network.getResponseBody' ? body : {});
     vi.stubGlobal('chrome', mock.chrome);
     const mod = await import('./cdp');
     mod.registerListeners();
@@ -539,17 +543,25 @@ describe('cdp network capture correctness', () => {
       requestId: 'r2',
       request: { url: 'https://api.example/x', method: 'GET' },
     });
-    // Read drains entries + clears requestToIndex while the request is in flight.
-    const first = await mod.readNetworkCapture(1);
+    const first = await mod.readNetworkCapture(1, true);
     expect(first).toHaveLength(1);
+    expect(first[0].captureComplete).not.toBe(true);
 
-    // Late response for the drained request must not resurrect a half-entry.
     await mock.fire('Network.responseReceived', {
       requestId: 'r2',
       response: { url: 'https://api.example/x', status: 200, mimeType: 'text/html' },
     });
-    const second = await mod.readNetworkCapture(1);
-    expect(second).toEqual([]);
+    const finishing = mock.fire('Network.loadingFinished', { requestId: 'r2' });
+    const second = await mod.readNetworkCapture(1, true);
+    expect(second[0].responseStatus).toBe(200);
+    expect(second[0].responsePreview).toBeUndefined();
+    releaseBody({ body: '{"ok":true}', base64Encoded: false });
+    await finishing;
+    const completed = await mod.readNetworkCapture(1, true);
+    expect(completed).toHaveLength(1);
+    expect(completed[0].responsePreview).toBe('{"ok":true}');
+    expect(completed[0].captureComplete).toBe(true);
+    expect(await mod.readNetworkCapture(1, true)).toEqual([]);
   });
 });
 

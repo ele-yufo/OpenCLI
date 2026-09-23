@@ -188,7 +188,18 @@ export async function prepareSunoNative(page, payload) {
     if (payload.negativeTags.length > 1000) throw new ArgumentError('Suno Advanced exclusions allow at most 1000 characters; no generation was submitted.');
     await page.goto(`${SUNO_URL}/create`);
     await page.wait({ selector: 'button[role="tab"][aria-label="Simple"]', timeout: 30 });
-    await clickSunoControl(page, `button[role="tab"][aria-label="${advanced ? 'Advanced' : 'Simple'}"]`);
+    const tab = `button[role="tab"][aria-label="${advanced ? 'Advanced' : 'Simple'}"]`;
+    // The Create page can restore its previous mode after the tabs first
+    // appear. Use a native click and verify the selected tab before filling.
+    let selectedMode = false;
+    for (let attempt = 0; attempt < 3; attempt++) {
+        await page.click(tab);
+        await page.wait(0.3);
+        const state = await nativeState(page);
+        selectedMode = advanced ? state.advanced : state.simple;
+        if (selectedMode) break;
+    }
+    if (!selectedMode) throw new CommandExecutionError('Suno Create mode did not stay selected; no generation was submitted.');
     await page.wait({ selector: advanced ? STYLES : SIMPLE_PROMPT, timeout: 10 });
     // Hidden Chrome tabs can leave Suno's lazy rows unpainted indefinitely.
     // A compositor capture flushes the real UI; discard it, do not save images.
@@ -259,15 +270,14 @@ export async function submitSunoNative(page, payload, timeout) {
         throw new CommandExecutionError('Suno native generation needs browser response capture; no generation was submitted. Update the OpenCLI browser extension.');
     }
     await page.readNetworkCapture(); // Drain old requests before the only click.
-    const recovery = `Do not rerun generate automatically. Check ${SUNO_URL}/create or run opencli suno list, then download the existing clip ids.`;
+    let recovery = `Do not rerun generate automatically. Check ${SUNO_URL}/create or run opencli suno list, then download the existing clip ids.`;
     try {
         const dispatch = await dispatchSunoCreateOnce(page, payload.transactionUuid);
         if (!['dispatched', 'already_dispatched'].includes(dispatch?.status)) {
             throw new CommandExecutionError('Suno Create is missing, disabled, covered, or cannot store the duplicate-write guard; no generation was submitted.');
         }
-        const deadline = Date.now() + Math.min(timeout, 90) * 1000;
-        // The bridge drains in-flight captures. Wait for new visible result rows
-        // before reading, so the completed response body is not lost.
+        const deadline = Date.now() + timeout * 1000;
+        // Wait for the site's new result rows before reading the network capture.
         let state;
         do {
             await page.wait(1);
@@ -278,8 +288,22 @@ export async function submitSunoNative(page, payload, timeout) {
             }
             if (new Set(state.ids.filter(id => !previousIds.has(id))).size >= 2) break;
         } while (Date.now() < deadline);
-        const entries = await page.readNetworkCapture();
-        const responses = entries.filter(e => e?.url === GENERATE_URL && e.method === 'POST');
+        const candidateIds = [...new Set(state.ids.filter(id => !previousIds.has(id)))];
+        if (candidateIds.length) recovery = `Candidate new clip ids: ${candidateIds.join(', ')}. ${recovery}`;
+        // Older extensions drain an in-flight capture; allow the site's own
+        // result transition to settle before the first read. Newer extensions
+        // retain unfinished entries, so poll until their bodies are complete.
+        await page.wait({ time: 1 });
+        const captured = new Map();
+        do {
+            const entries = await page.readNetworkCapture({ retainIncomplete: true });
+            for (const entry of entries.filter(e => e?.url === GENERATE_URL && e.method === 'POST')) {
+                captured.set(entry.timestamp ?? 'single', entry);
+            }
+            if ([...captured.values()].some(e => e.captureComplete || typeof e.responsePreview === 'string')) break;
+            await page.wait({ time: 0.5 });
+        } while (Date.now() < deadline);
+        const responses = [...captured.values()];
         if (responses.length !== 1) throw new CommandExecutionError(`Suno native submission outcome is uncertain (expected one generation response, received ${responses.length}). ${recovery}`);
         const response = responses[0];
         if (response.responseStatus !== 200 || response.responseBodyTruncated || typeof response.responsePreview !== 'string') {
@@ -295,11 +319,20 @@ export async function submitSunoNative(page, payload, timeout) {
         if (!response.requestBodyTruncated && typeof response.requestBodyPreview === 'string') {
             try { request = JSON.parse(response.requestBodyPreview); } catch {}
         }
-        const expectedPrompt = advanced ? payload.lyrics : payload.description;
+        const expectedPrompt = advanced ? payload.lyrics : '';
         const expectedTags = advanced ? (payload.mode === 'custom' ? payload.tags : payload.description) : '';
-        const requestMatches = request?.mv === payload.model && request.prompt === expectedPrompt &&
+        const requestSliders = request?.metadata?.control_sliders;
+        const slidersMatch = !requestSliders ||
+            ((requestSliders.weirdness_constraint === undefined || Math.abs(requestSliders.weirdness_constraint - payload.weirdness) < 0.001) &&
+            (requestSliders.style_weight === undefined || Math.abs(requestSliders.style_weight - payload.styleWeight) < 0.001));
+        const noReferences = ['cover_clip_id', 'continue_clip_id', 'artist_clip_id', 'persona_id', 'user_uploaded_images_b64']
+            .every(field => request?.[field] == null);
+        const requestMatches = request?.mv === payload.model && request.generation_type === 'TEXT' &&
+            request.metadata?.create_mode === (advanced ? 'custom' : 'simple') &&
+            request.prompt === expectedPrompt &&
+            (advanced || request.gpt_description_prompt === payload.description) &&
             (request.tags || '') === expectedTags && (request.negative_tags || '') === payload.negativeTags &&
-            request.make_instrumental === payload.makeInstrumental;
+            request.make_instrumental === payload.makeInstrumental && noReferences && slidersMatch;
         if (!requestMatches || !Array.isArray(clips) || clips.length !== 2 ||
             new Set(clips.map(c => c?.id)).size !== 2 || clips.some(c =>
                 !CLIP_ID.test(c?.id || '') || previousIds.has(c.id) || !state.ids.includes(c.id))) {
@@ -308,9 +341,14 @@ export async function submitSunoNative(page, payload, timeout) {
                 requestModel: request?.mv ?? null,
                 requestInputMatches: request ? {
                     prompt: request.prompt === expectedPrompt,
+                    description: advanced || request.gpt_description_prompt === payload.description,
                     tags: (request.tags || '') === expectedTags,
                     negative: (request.negative_tags || '') === payload.negativeTags,
                     instrumental: request.make_instrumental === payload.makeInstrumental,
+                    mode: request.metadata?.create_mode === (advanced ? 'custom' : 'simple'),
+                    plainText: request.generation_type === 'TEXT',
+                    noReferences,
+                    sliders: slidersMatch,
                 } : null,
                 newIdsVisible: Array.isArray(clips) ? clips.map(c => !!c?.id && !previousIds.has(c.id) && state.ids.includes(c.id)) : null,
             };

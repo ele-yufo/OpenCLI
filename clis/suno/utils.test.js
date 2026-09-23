@@ -343,8 +343,9 @@ describe('suno utils — model + format exports', () => {
 });
 
 describe('suno direct API single-shot submission', () => {
-    it('uses a mounted legacy Clerk token when no first-party cookie exists', async () => {
+    it('prefers a refreshed Clerk token over a stale first-party cookie', async () => {
         const dom = new JSDOM('', { runScripts: 'outside-only', url: 'https://suno.com/create' });
+        dom.window.document.cookie = '__session=expired';
         dom.window.Clerk = { session: { getToken: async () => 'legacy.jwt' } };
         dom.window.fetch = async (_url, request) => {
             expect(request.headers.Authorization).toBe('Bearer legacy.jwt');
