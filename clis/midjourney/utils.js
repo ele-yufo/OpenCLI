@@ -1046,14 +1046,28 @@ async function injectImagesFallback(page, localPaths) {
   }
 }
 
-async function markReferenceTarget(page, sourceUrl, slotLabel) {
-  const result = unwrapEvaluateResult(await page.evaluate((url, label) => {
+// Panel headings drift between releases ("Style References" became "Style
+// reference", and Omni Reference has left the panel), so slots are matched by
+// any known heading, case-insensitively.
+export const SLOT_HEADINGS = {
+  image: ['Image Prompts'],
+  style: ['Style References', 'Style reference'],
+  omni: ['Omni Reference'],
+  end: ['End Frame'],
+};
+const ALL_PANEL_HEADINGS = ['Image Prompts', 'Style References', 'Style reference', 'Omni Reference', 'Attach to prompt'];
+
+async function markReferenceTarget(page, sourceUrl, slotHeadings) {
+  const slotLabel = slotHeadings[0];
+  const result = unwrapEvaluateResult(await page.evaluate((url, headings) => {
     document.querySelectorAll('[data-opencli-ref-source],[data-opencli-ref-target]').forEach((el) => {
       el.removeAttribute('data-opencli-ref-source');
       el.removeAttribute('data-opencli-ref-target');
     });
     const source = [...document.querySelectorAll('img[src]')].find((img) => img.src === url);
-    const labelNode = [...document.querySelectorAll('div,span')].find((node) => node.children.length === 0 && node.textContent?.trim() === label);
+    const wanted = headings.map((heading) => heading.toLowerCase());
+    const labelNode = [...document.querySelectorAll('div,span')]
+      .find((node) => node.children.length === 0 && wanted.includes(node.textContent?.trim().toLowerCase()));
     if (!source || !labelNode) return { ok: false, source: Boolean(source), target: Boolean(labelNode) };
     let target = labelNode.parentElement;
     while (target && target.parentElement) {
@@ -1065,27 +1079,38 @@ async function markReferenceTarget(page, sourceUrl, slotLabel) {
     source.setAttribute('data-opencli-ref-source', '1');
     target.setAttribute('data-opencli-ref-target', '1');
     return { ok: true };
-  }, sourceUrl, slotLabel));
+  }, sourceUrl, slotHeadings));
   if (!result?.ok) throw new CommandExecutionError(`Could not locate Midjourney ${slotLabel} slot after upload`);
 }
 
-async function verifyReferenceTarget(page, slotLabel) {
-  const assigned = unwrapEvaluateResult(await page.evaluate((label) => {
+export async function verifyReferenceTarget(page, slotHeadings, { requireThumbnail = true } = {}) {
+  const slotLabel = slotHeadings[0];
+  const assigned = unwrapEvaluateResult(await page.evaluate((headings, allHeadings, needThumbnail) => {
+    const wanted = headings.map((heading) => heading.toLowerCase());
     const labelNode = [...document.querySelectorAll('div,span')]
-      .find((node) => node.children.length === 0 && node.textContent?.trim() === label);
+      .find((node) => node.children.length === 0 && wanted.includes(node.textContent?.trim().toLowerCase()));
     if (!labelNode) return false;
-    const peerLabels = ['Image Prompts', 'Style References', 'Omni Reference'].filter((item) => item !== label);
+    const peerLabels = allHeadings.map((item) => item.toLowerCase()).filter((item) => !wanted.includes(item));
+    const visible = (element) => {
+      const rect = element.getBoundingClientRect();
+      return rect.width > 0 && rect.height > 0 && getComputedStyle(element).display !== 'none';
+    };
+    // A filled slot shows the reference as a thumbnail: an <img> in older
+    // layouts, a CSS background image in the current one. The old "has a button
+    // or img and no empty-state text" test also passed on an empty slot.
+    const hasThumbnail = (root) => [...root.querySelectorAll('*')].some((element) => visible(element)
+      && (element.tagName === 'IMG' || /url\(/.test(getComputedStyle(element).backgroundImage)));
     let target = labelNode;
     for (let depth = 0; depth < 8 && target?.parentElement; depth += 1) {
       target = target.parentElement;
-      const text = target.textContent || '';
+      const text = (target.textContent || '').toLowerCase();
       if (peerLabels.some((peer) => text.includes(peer))) break;
       const empty = [...target.querySelectorAll('div')]
         .some((node) => /^Select images? below$/i.test(node.textContent?.trim() || ''));
-      if (!empty && target.querySelector('button,img')) return true;
+      if (!empty && target.querySelector('button,img')) return needThumbnail ? hasThumbnail(target) : true;
     }
     return false;
-  }, slotLabel));
+  }, slotHeadings, ALL_PANEL_HEADINGS, requireThumbnail));
   if (!assigned) throw new CommandExecutionError(`Midjourney ${slotLabel} reference assignment was not verified`);
 }
 
@@ -1175,20 +1200,15 @@ export async function uploadReferencesToSlot(page, localPaths, slot) {
     await openImagePanel(page);
   }
 
-  const label = slot === 'style'
-    ? 'Style References'
-    : slot === 'end'
-      ? 'End Frame'
-      : slot === 'image'
-        ? 'Image Prompts'
-        : 'Omni Reference';
+  const label = SLOT_HEADINGS[slot];
   if (slot === 'omni' && selected.length !== 1) throw new ArgumentError('Omni Reference accepts exactly one local image');
   if (typeof page.drag !== 'function') throw new CommandExecutionError('Browser Bridge does not support Reference drag-and-drop');
   for (const url of selected) {
     await markReferenceTarget(page, url, label);
     await page.drag('[data-opencli-ref-source="1"]', '[data-opencli-ref-target="1"]');
     await page.wait(0.8);
-    await verifyReferenceTarget(page, label);
+    // The End Frame slot lives in the video composer, whose layout was not re-checked.
+    await verifyReferenceTarget(page, label, { requireThumbnail: slot !== 'end' });
   }
   return selected;
 }
@@ -1228,11 +1248,10 @@ export async function clickVisibleControl(page, label) {
       const rect = element.getBoundingClientRect();
       return rect.width > 0 && rect.height > 0 && getComputedStyle(element).display !== 'none';
     };
-    const button = [...document.querySelectorAll('button')].find((node) => visible(node) && (
-      node.textContent?.trim().replace(/\s+/g, ' ') === wanted
-      || node.title === wanted
-      || node.getAttribute('aria-label') === wanted
-    ));
+    // The site changes label case between releases ("Add Images" became "Add images").
+    const norm = (value) => String(value || '').trim().replace(/\s+/g, ' ').toLowerCase();
+    const button = [...document.querySelectorAll('button')].find((node) => visible(node)
+      && [node.textContent, node.title, node.getAttribute('aria-label')].some((value) => norm(value) === norm(wanted)));
     if (!button || button.disabled) return null;
     const rect = button.getBoundingClientRect();
     return { x: rect.left + rect.width / 2, y: rect.top + rect.height / 2 };
@@ -1291,8 +1310,9 @@ export async function toggleSettingsPanel(page) {
     let root = input?.parentElement;
     for (let depth = 0; depth < 4 && root; depth += 1, root = root.parentElement) {
       const buttons = [...root.querySelectorAll('button')].filter(visible);
-      const nonImage = buttons.filter((button) => button.getAttribute('aria-label') !== 'Add Images');
-      if (buttons.some((button) => button.getAttribute('aria-label') === 'Add Images') && nonImage.length) {
+      const isAddImages = (button) => String(button.getAttribute('aria-label') || '').trim().toLowerCase() === 'add images';
+      const nonImage = buttons.filter((button) => !isAddImages(button));
+      if (buttons.some(isAddImages) && nonImage.length) {
         const button = nonImage.at(-1);
         const rect = button.getBoundingClientRect();
         return { x: rect.left + rect.width / 2, y: rect.top + rect.height / 2 };

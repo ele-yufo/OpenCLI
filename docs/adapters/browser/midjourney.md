@@ -89,6 +89,14 @@ opencli midjourney generate "quiet reading room" --profile <profile-or-moodboard
 
 Every paid generation clears any manually pinned/stale web-composer references first. This prevents a no-reference CLI call from inheriting hidden browser state.
 
+After a local file is dragged into its slot, the adapter checks that the slot now shows a thumbnail and fails instead of submitting if it does not. The reference panel is matched by heading (`Image Prompts`, `Style reference`), ignoring case.
+
+Known limits, observed on the web panel on 2026-09-30 with V8.2 selected:
+
+- The panel has no Omni Reference slot, so a local `--omni-ref` file fails with `Could not locate Midjourney Omni Reference slot after upload`. It was not checked whether the slot returns when V7 is selected.
+- An uploaded image is also attached under the panel's `Attach to prompt` heading (the edit model entry). How Midjourney treats it when the job is submitted was not checked.
+- An HTTPS or `/jobs/<uuid>` reference is written into the prompt and does not go through the panel, so neither limit applies to it.
+
 ## Creation Actions and video
 
 Image jobs support:

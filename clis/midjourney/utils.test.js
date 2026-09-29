@@ -4,6 +4,7 @@ import path from 'node:path';
 import { afterEach, expect, it, vi } from 'vitest';
 import {
   cancelMidjourneyJob,
+  clickVisibleControl,
   creditsToFastMinutes,
   downloadRawVideo,
   downloadRenderedVideo,
@@ -17,11 +18,13 @@ import {
   promptKeySignature,
   jobStatusRow,
   selectSiteSetting,
+  SLOT_HEADINGS,
   waitForCompletedJob,
   waitForDerivedJob,
   waitForSubmittedJobsAfter,
   submittedJobIdsFromCaptures,
   uploadedStorageUrlsFromCaptures,
+  verifyReferenceTarget,
 } from './utils.js';
 
 const JOB = 'd5664250-5f1f-4cd0-9637-2ce0153dd30a';
@@ -30,6 +33,8 @@ const tempDirs = [];
 afterEach(async () => {
   vi.restoreAllMocks();
   delete globalThis.window;
+  delete globalThis.document;
+  delete globalThis.getComputedStyle;
   await Promise.all(tempDirs.splice(0).map((dir) => fs.rm(dir, { recursive: true, force: true })));
 });
 
@@ -456,4 +461,76 @@ it('rendered downloads trust file magic over stale Browser Bridge MIME metadata'
   expect(result.bytes).toBe(gif.length);
   expect(await fs.readFile(result.filePath)).toEqual(gif);
   await expect(fs.stat(sourcePath)).rejects.toMatchObject({ code: 'ENOENT' });
+});
+
+// A minimal DOM for the in-page reference-panel logic. It models the current
+// panel: three slot cells side by side, each with a heading, a hint and a
+// button that is present whether or not the slot is filled (that button is why
+// the old "has a button or img" assertion passed on empty slots).
+function node(tag, { text = '', bg = 'none', attrs = {}, kids = [] } = {}) {
+  const self = {
+    tagName: tag.toUpperCase(), ownText: text, bg, attrs, children: [], parentElement: null, disabled: false, title: attrs.title || '',
+    get textContent() { return self.ownText + self.children.map((child) => child.textContent).join(''); },
+    getAttribute: (name) => self.attrs[name] ?? null,
+    getBoundingClientRect: () => ({ width: 100, height: 40, left: 10, top: 20 }),
+    descendants() { return self.children.flatMap((child) => [child, ...child.descendants()]); },
+    querySelectorAll(selector) {
+      const tags = selector === '*' ? null : selector.split(',').map((item) => item.trim().toUpperCase());
+      return self.descendants().filter((item) => !tags || tags.includes(item.tagName));
+    },
+    querySelector(selector) { return self.querySelectorAll(selector)[0] || null; },
+  };
+  for (const kid of kids) { kid.parentElement = self; self.children.push(kid); }
+  return self;
+}
+
+function slotCell(heading, hint, { thumb } = {}) {
+  return node('div', { kids: [
+    node('button'),
+    node('div', { text: heading }),
+    node('div', { text: hint }),
+    ...(thumb === 'bg' ? [node('div', { bg: 'url("https://cdn.midjourney.com/u/x.png")' })] : []),
+    ...(thumb === 'img' ? [node('img', { attrs: { src: 'https://cdn.midjourney.com/u/x.png' } })] : []),
+  ] });
+}
+
+function panelPage(cells, buttons = []) {
+  const root = node('div', { kids: [node('div', { kids: cells }), ...buttons] });
+  globalThis.document = { querySelectorAll: (selector) => root.querySelectorAll(selector) };
+  globalThis.getComputedStyle = (item) => ({ display: 'block', backgroundImage: item.bg });
+  const clicks = [];
+  return { clicks, evaluate: async (fn, ...args) => fn(...args), nativeClick: async (x, y) => { clicks.push([x, y]); } };
+}
+
+const attachCell = (opts) => slotCell('Attach to prompt', 'Edit or combine images, like "make this car red"', opts);
+const styleCell = (opts) => slotCell('Style reference', 'Use the style of an image', opts);
+const imageCell = (opts) => slotCell('Image Prompts', 'Use the elements of an image', opts);
+
+it('clickVisibleControl matches a control whatever its label case', async () => {
+  const page = panelPage([], [node('button', { text: 'Add images', attrs: { 'aria-label': 'Add images' } })]);
+  await clickVisibleControl(page, 'Add Images');
+  expect(page.clicks).toEqual([[60, 40]]);
+  await expect(clickVisibleControl(panelPage([], []), 'Add Images')).rejects.toThrow(/"Add Images" was not found/);
+});
+
+it('reference assertion rejects empty slots, which the old button-or-img test let through', async () => {
+  const page = panelPage([attachCell(), styleCell(), imageCell()]);
+  await expect(verifyReferenceTarget(page, SLOT_HEADINGS.image)).rejects.toThrow(/not verified/);
+  await expect(verifyReferenceTarget(page, SLOT_HEADINGS.style)).rejects.toThrow(/not verified/);
+});
+
+it('reference assertion accepts a background-image thumbnail in the matching slot only', async () => {
+  const page = panelPage([attachCell({ thumb: 'bg' }), styleCell(), imageCell({ thumb: 'bg' })]);
+  await verifyReferenceTarget(page, SLOT_HEADINGS.image);
+  await expect(verifyReferenceTarget(page, SLOT_HEADINGS.style)).rejects.toThrow(/not verified/);
+});
+
+it('reference assertion knows the singular Style reference heading and the older img thumbnails', async () => {
+  await verifyReferenceTarget(panelPage([attachCell(), styleCell({ thumb: 'bg' }), imageCell()]), SLOT_HEADINGS.style);
+  await verifyReferenceTarget(panelPage([slotCell('Style References', 'x', { thumb: 'img' }), imageCell()]), SLOT_HEADINGS.style);
+});
+
+it('a thumbnail in a neighbouring slot does not satisfy this slot', async () => {
+  const page = panelPage([attachCell({ thumb: 'bg' }), styleCell(), imageCell()]);
+  await expect(verifyReferenceTarget(page, SLOT_HEADINGS.image)).rejects.toThrow(/not verified/);
 });
