@@ -980,6 +980,10 @@ export async function openImagePanel(page) {
   const markInput = async () => unwrapEvaluateResult(await page.evaluate(() => {
     document.querySelectorAll('[data-opencli-image-input]').forEach((node) => node.removeAttribute('data-opencli-image-input'));
     const inputs = [...document.querySelectorAll('input[type="file"][accept*="image"]')];
+    if (!inputs.length) return false;
+    // Prefer an input with a rendered drop zone around it. The current panel
+    // keeps its input permanently hidden until the OS picker opens, so a
+    // hidden input is still markable: setting files does not need it visible.
     const active = inputs.find((input) => {
       let root = input.parentElement;
       for (let depth = 0; depth < 8 && root; depth += 1, root = root.parentElement) {
@@ -987,15 +991,18 @@ export async function openImagePanel(page) {
         if (rect.width > 100 && rect.height > 40) return true;
       }
       return false;
-    });
-    if (!active) return false;
+    }) || inputs[0];
     active.setAttribute('data-opencli-image-input', '1');
     return true;
   }));
   if (!await markInput()) {
     await clickVisibleControl(page, 'Add Images');
-    await page.wait({ selector: 'input[type="file"][accept*="image"]', timeout: 10 });
-    if (!await markInput()) throw new CommandExecutionError('Midjourney image upload input did not become active');
+    let opened = false;
+    for (let attempt = 0; attempt < 10 && !opened; attempt += 1) {
+      await page.wait(0.5);
+      opened = await markInput();
+    }
+    if (!opened) throw new CommandExecutionError('Midjourney image upload input did not become active');
   }
 }
 
@@ -1155,8 +1162,9 @@ async function readSlotThumbnails(page, slotHeadings) {
       target = target.parentElement;
       const text = (target.textContent || '').toLowerCase();
       if (peerLabels.some((peer) => text.includes(peer))) break;
+      // The current panel wraps the hint across lines ("Select\nimages\nbelow").
       const empty = [...target.querySelectorAll('div')]
-        .some((node) => /^Select images? below$/i.test(node.textContent?.trim() || ''));
+        .some((node) => /^select images? below$/i.test((node.textContent || '').replace(/\s+/g, ' ').trim()));
       if (!empty && target.querySelector('button,img')) {
         // A filled slot shows each reference as a thumbnail: an <img> in older
         // layouts, a CSS background image in the current one.
