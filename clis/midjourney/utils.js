@@ -1272,7 +1272,10 @@ export async function uploadReferenceLibrary(page, localPaths) {
       uploaded = true;
     } catch (error) {
       const message = errorMessage(error);
-      if (!/Unknown action|not supported|Not allowed|No element found/i.test(message)) throw error;
+      // The current panel keeps its input hidden and never raises the
+      // intercepted file chooser, so that failure must fall through to the
+      // in-page injection fallback below instead of aborting the upload.
+      if (!/Unknown action|not supported|Not allowed|No element found|fileChooserOpened|file chooser/i.test(message)) throw error;
     }
   }
   if (!uploaded) await injectImagesFallback(page, localPaths);
