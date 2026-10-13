@@ -153,9 +153,38 @@ describe('suno generate Simple mode payload', () => {
             modelName: 'v6',
         }));
     });
+    it('falls back to the account default when the v6 successor is unusable', async () => {
+        // A free account: only v6-mini is usable, so chirp-v4 cannot map to v6.
+        mocks.ensureSunoSession.mockResolvedValue({ ...okSession, models: [
+            { name: 'v6', externalKey: 'chirp-hawk', canUse: false, isDefault: false, isDefaultFree: false },
+            { name: 'v6-mini', externalKey: 'chirp-goose', canUse: true, isDefault: false, isDefaultFree: true },
+        ] });
+        await generateCommand.func(createPage(), { prompt: 'short melody', model: 'chirp-v4', sd: true, timeout: 60 });
+        expect(mocks.submitSunoGeneration).toHaveBeenCalledWith(expect.anything(), expect.objectContaining({
+            model: 'chirp-goose',
+            modelName: 'v6-mini',
+        }));
+    });
+    it('prefers the account default over the free default regardless of billing order', async () => {
+        // v6-mini listed first: the paid default v6 must still win.
+        mocks.ensureSunoSession.mockResolvedValue({ ...okSession, models: [
+            { name: 'v6-mini', externalKey: 'chirp-goose', canUse: true, isDefault: false, isDefaultFree: true },
+            { name: 'v6', externalKey: 'chirp-hawk', canUse: true, isDefault: true, isDefaultFree: false },
+        ] });
+        await generateCommand.func(createPage(), { prompt: 'short melody', sd: true, timeout: 60 });
+        expect(mocks.submitSunoGeneration).toHaveBeenCalledWith(expect.anything(), expect.objectContaining({
+            model: 'chirp-hawk',
+            modelName: 'v6',
+        }));
+    });
     it('still rejects --model values that were never Suno models', async () => {
         await expect(generateCommand.func(createPage(), { prompt: 'short melody', model: 'gpt-4o', sd: true, timeout: 60 }))
             .rejects.toMatchObject({ code: 'ARGUMENT', message: expect.stringContaining('Unsupported --model "gpt-4o"') });
+        expect(mocks.submitSunoGeneration).not.toHaveBeenCalled();
+    });
+    it('rejects a blank --model instead of silently using a default', async () => {
+        await expect(generateCommand.func(createPage(), { prompt: 'short melody', model: '   ', sd: true, timeout: 60 }))
+            .rejects.toMatchObject({ code: 'ARGUMENT', message: expect.stringContaining('Unsupported --model ""') });
         expect(mocks.submitSunoGeneration).not.toHaveBeenCalled();
     });
 });

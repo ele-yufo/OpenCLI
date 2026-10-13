@@ -213,15 +213,17 @@ describe('suno utils — parseSunoBillingInfo', () => {
             models: [
                 { name: 'v6', external_key: 'chirp-hawk', can_use: true, is_default_model: true },
                 { name: 'v6-wild', external_key: 'chirp-hawk-wild', can_use: false },
-                { name: 'v6-mini', external_key: 'chirp-goose', can_use: true },
+                { name: 'v6-mini', external_key: 'chirp-goose', can_use: true, is_default_free_model: true },
             ],
         });
         expect(parsed.planId).toBe('pro-plan');
         expect(parsed.planKey).toBe('pro');
+        // isDefault (account default) and isDefaultFree (free-plan fallback)
+        // stay distinct: a paid account must not inherit the free default.
         expect(parsed.models).toEqual([
-            { name: 'v6', externalKey: 'chirp-hawk', canUse: true, isDefault: true },
-            { name: 'v6-wild', externalKey: 'chirp-hawk-wild', canUse: false, isDefault: false },
-            { name: 'v6-mini', externalKey: 'chirp-goose', canUse: true, isDefault: false },
+            { name: 'v6', externalKey: 'chirp-hawk', canUse: true, isDefault: true, isDefaultFree: false },
+            { name: 'v6-wild', externalKey: 'chirp-hawk-wild', canUse: false, isDefault: false, isDefaultFree: false },
+            { name: 'v6-mini', externalKey: 'chirp-goose', canUse: true, isDefault: false, isDefaultFree: true },
         ]);
     });
 

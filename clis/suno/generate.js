@@ -189,6 +189,12 @@ export async function prepareSunoNative(page, payload) {
     if (payload.mode === 'simple' && payload.description.length > 3000) throw new ArgumentError('Suno Simple mode allows at most 3000 characters; no generation was submitted.');
     if (payload.mode === 'custom' && payload.lyrics.length > 5000) throw new ArgumentError('Suno Advanced lyrics allow at most 5000 characters; no generation was submitted.');
     if (payload.negativeTags.length > 1000) throw new ArgumentError('Suno Advanced exclusions allow at most 1000 characters; no generation was submitted.');
+    // The current Create form has no instrumental control; whatever it submits
+    // would be vocals. Refuse before the paid click instead of discovering the
+    // mismatch from the captured request after credits are spent.
+    if (payload.makeInstrumental) {
+        throw new CommandExecutionError('Suno Create cannot request instrumental generation in the current form; no generation was submitted. Retry without --via-ui when the verification probe passes, or drop --instrumental.');
+    }
     await page.goto(`${SUNO_URL}/create`);
     await page.wait({ selector: 'button[role="tab"][aria-label="Simple"]', timeout: 30 });
     const tab = `button[role="tab"][aria-label="${advanced ? 'Advanced' : 'Simple'}"]`;
@@ -444,7 +450,10 @@ export const generateCommand = cli({
         const negativeTags = kwargs['negative-tags'] ? String(kwargs['negative-tags']) : '';
         const description = kwargs.prompt ? String(kwargs.prompt) : '';
         const titleArg = kwargs.title ? String(kwargs.title) : '';
-        const requestedModelInput = kwargs.model ? String(kwargs.model).trim() : null;
+        if (kwargs.model != null && String(kwargs.model).trim() === '') {
+            throw new ArgumentError('Unsupported --model ""', 'Pass a model name, or omit --model to use the account default.');
+        }
+        const requestedModelInput = kwargs.model != null ? String(kwargs.model).trim() : null;
         const resolvedModel = requestedModelInput ? resolveSunoModelName(requestedModelInput) : null;
         if (requestedModelInput && !resolvedModel) {
             throw new ArgumentError(
@@ -495,9 +504,24 @@ export const generateCommand = cli({
 
         const session = await ensureSunoSession(page);
         const availableModels = session.models?.filter(m => m.canUse && SUNO_MODELS.includes(m.name)) || [];
-        const modelName = requestedModel || availableModels.find(m => m.isDefault)?.name || availableModels[0]?.name || DEFAULT_SUNO_MODEL;
-        const availableModel = availableModels.find(m => m.name === modelName);
-        if (!availableModel) throw new CommandExecutionError(`Suno model ${modelName} is unavailable for this account; no generation was submitted.`);
+        // isDefault marks the account default (is_default_model); isDefaultFree
+        // only marks the free-plan fallback. A paid account whose billing data
+        // lists v6-mini first must still get its own default.
+        const accountDefault = availableModels.find(m => m.isDefault) || availableModels.find(m => m.isDefaultFree);
+        let modelName = requestedModel || accountDefault?.name || availableModels[0]?.name || DEFAULT_SUNO_MODEL;
+        let availableModel = availableModels.find(m => m.name === modelName);
+        if (!availableModel) {
+            // A retired chirp-* name keeps old scripts running even where its
+            // v6 successor is not usable (e.g. free accounts): fall back to the
+            // account default rather than breaking the script.
+            if (resolvedModel?.legacy && accountDefault) {
+                log.warn(`Suno model ${modelName} (retired ${resolvedModel.legacy}) is unavailable for this account; using account default ${accountDefault.name}.`);
+                modelName = accountDefault.name;
+                availableModel = accountDefault;
+            } else {
+                throw new CommandExecutionError(`Suno model ${modelName} is unavailable for this account; no generation was submitted.`);
+            }
+        }
         if (!session.planId) {
             throw new CommandExecutionError(
                 `Suno generation needs a resolved plan id for the user_tier field, but billing/info did not surface one for this account (subscription_type=${session.planKey}). Verify the account is active at ${SUNO_URL}/account, then retry.`,

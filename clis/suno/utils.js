@@ -190,7 +190,8 @@ export function parseSunoBillingInfo(data) {
             name: m.name,
             externalKey: m.external_key,
             canUse: m.can_use === true,
-            isDefault: m.is_default_model === true || m.is_default_free_model === true,
+            isDefault: m.is_default_model === true,
+            isDefaultFree: m.is_default_free_model === true,
         })),
         breakdown: {
             pack: data?.credits ?? 0,

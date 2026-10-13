@@ -13,11 +13,11 @@ vi.mock('./utils.js', async importOriginal => ({
 const { generateCommand, prepareSunoNative } = await import('./generate.js');
 const ids = ['aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa', 'bbbbbbbb-bbbb-4bbb-8bbb-bbbbbbbbbbbb'];
 const description = 'Spacious instrumental piano and cello, 60 BPM.';
-const options = { prompt: description, instrumental: true, title: 'Test score', sd: true, timeout: 2 };
-const payload = { mode: 'simple', model: 'chirp-hawk', modelName: 'v6', weirdness: 0.5, styleWeight: 0.5, description, lyrics: '', tags: '', negativeTags: '', makeInstrumental: true, deviceId: 'device-test' };
-const clips = () => ids.map(id => ({ id, title: 'Native title', status: 'complete', model_name: 'chirp-hawk', metadata: { tags: description, prompt: '', negative_tags: '', make_instrumental: true } }));
-const nativeRequest = { generation_type: 'TEXT', mv: 'chirp-hawk', prompt: '', tags: description, negative_tags: '', make_instrumental: true,
-    metadata: { create_mode: 'custom', control_sliders: { aug_creativity: 4 } },
+const options = { prompt: description, title: 'Test score', sd: true, timeout: 2 };
+const payload = { mode: 'simple', model: 'chirp-hawk', modelName: 'v6', weirdness: 0.5, styleWeight: 0.5, description, lyrics: '', tags: '', negativeTags: '', makeInstrumental: false, deviceId: 'device-test' };
+const clips = () => ids.map(id => ({ id, title: 'Native title', status: 'complete', model_name: 'chirp-hawk', metadata: { gpt_description_prompt: description, prompt: '', negative_tags: '', make_instrumental: false } }));
+const nativeRequest = { generation_type: 'TEXT', mv: 'chirp-hawk', prompt: '', gpt_description_prompt: description, tags: '', negative_tags: '', make_instrumental: false,
+    metadata: { create_mode: 'simple', control_sliders: { aug_creativity: 4 } },
     cover_clip_id: null, continue_clip_id: null, artist_clip_id: null, persona_id: null, user_uploaded_images_b64: null };
 
 // Browser-shaped fixture executes the production DOM reads, form preparation,
@@ -206,7 +206,7 @@ describe('Suno native Create fallback', () => {
     });
     it('selects v6-wild from the live model menu before one submission', async () => {
         const page = browser({ request: { ...nativeRequest, mv: 'chirp-hawk-wild' },
-            body: { clips: ids.map(id => ({ id, model_name: 'chirp-hawk', metadata: { tags: 'upsampled', prompt: '', make_instrumental: true } })) } });
+            body: { clips: ids.map(id => ({ id, model_name: 'chirp-hawk', metadata: { tags: 'upsampled', prompt: '', make_instrumental: false } })) } });
         const rows = await generateCommand.func(page, { ...options, model: 'v6-wild' });
         expect(rows).toHaveLength(2);
         expect(page.dom.window.document.querySelector('button[aria-haspopup="menu"]').textContent).toBe('v6-wild');
@@ -216,7 +216,8 @@ describe('Suno native Create fallback', () => {
         const lyrics = '[Verse] Adapter proof';
         const tags = 'sparse piano';
         const negative = 'drums';
-        const page = browser({ request: { ...nativeRequest, prompt: lyrics, tags, negative_tags: negative, make_instrumental: false },
+        const page = browser({ request: { ...nativeRequest, gpt_description_prompt: undefined, prompt: lyrics, tags, negative_tags: negative, make_instrumental: false,
+            metadata: { create_mode: 'custom', control_sliders: { aug_creativity: 4 } } },
             body: { clips: ids.map(id => ({ id, model_name: 'chirp-hawk', metadata: { tags, prompt: lyrics, negative_tags: negative, make_instrumental: false } })) } });
         const rows = await generateCommand.func(page, { lyrics, tags, 'negative-tags': negative, title: 'Test score', sd: true, timeout: 2 });
         expect(rows).toHaveLength(2);
@@ -268,10 +269,22 @@ describe('Suno native Create fallback', () => {
         expect(page.controls.mock.calls.some(([s]) => s.includes('Clear all'))).toBe(false);
         expect(createClicks(page)).toHaveLength(1);
     });
-    it.each([{ mode: 'custom', lyrics: 'x', makeInstrumental: true }, { description: 'x'.repeat(1001) }, { negativeTags: 'x'.repeat(1001) }])('rejects unsupported native input before navigation: %j', async changed => {
+    it.each([{ mode: 'custom', lyrics: 'x', makeInstrumental: true }, { makeInstrumental: true, description: 'x'.repeat(1001) }, { mode: 'custom', negativeTags: 'x'.repeat(1001) }])('rejects unsupported native input before navigation: %j', async changed => {
         const page = browser();
         await expect(prepareSunoNative(page, { ...payload, ...changed })).rejects.toMatchObject({ code: 'ARGUMENT' });
         expect(page.goto).not.toHaveBeenCalled();
+    });
+    it('refuses instrumental generation in the Create fallback before any paid click', async () => {
+        // The current Create form has no instrumental control; clicking would
+        // spend credits on a vocal generation and only the post-submit audit
+        // would notice.
+        const page = browser();
+        await expect(generateCommand.func(page, { ...options, instrumental: true })).rejects.toMatchObject({
+            code: 'COMMAND_EXEC',
+            message: expect.stringContaining('cannot request instrumental'),
+        });
+        expect(page.goto).not.toHaveBeenCalled();
+        expect(createClicks(page)).toHaveLength(0);
     });
     it('corrects a stale model choice before a paid click', async () => {
         const page = browser({ model: 'v4' });
