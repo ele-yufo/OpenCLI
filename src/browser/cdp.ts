@@ -211,6 +211,8 @@ class CDPPage extends CDPBasePage {
     responsePreview?: string;
     responseBodyFullSize?: number;
     responseBodyTruncated?: boolean;
+    requestBodyPending?: boolean;
+    responseFinished?: boolean;
     captureComplete?: boolean;
     timestamp: number;
   }> = [];
@@ -373,6 +375,13 @@ class CDPPage extends CDPBasePage {
           this._pendingRequests.set(p.requestId, idx);
 
           if (p.request.hasPostData && p.request.postData === undefined) {
+            // Complete only when BOTH bodies are settled; a response body that
+            // finishes first must not let a retaining read drop the entry
+            // before its late request body lands.
+            entry.requestBodyPending = true;
+            const settleComplete = () => {
+              entry.captureComplete = entry.responseFinished === true && entry.requestBodyPending !== true;
+            };
             const requestBodyFetch = this.bridge.send('Network.getRequestPostData', { requestId: p.requestId }).then((result: unknown) => {
               const postData = (result as { postData?: string } | undefined)?.postData;
               if (typeof postData !== 'string') return;
@@ -385,6 +394,8 @@ class CDPPage extends CDPBasePage {
             }).catch(() => {
               // Some request types do not expose post data.
             }).finally(() => {
+              entry.requestBodyPending = false;
+              settleComplete();
               this._pendingBodyFetches.delete(requestBodyFetch);
             });
             this._pendingBodyFetches.add(requestBodyFetch);
@@ -425,7 +436,8 @@ class CDPPage extends CDPBasePage {
               console.error(`[cdp] getResponseBody failed for ${p.requestId}:`, err instanceof Error ? err.message : err);
             }
           }).finally(() => {
-            entry.captureComplete = true;
+            entry.responseFinished = true;
+            entry.captureComplete = entry.requestBodyPending !== true;
             this._pendingBodyFetches.delete(bodyFetch);
           });
           this._pendingBodyFetches.add(bodyFetch);
@@ -437,7 +449,10 @@ class CDPPage extends CDPBasePage {
         const p = params as { requestId: string };
         const idx = this._pendingRequests.get(p.requestId);
         if (idx !== undefined) {
-          this._networkEntries[idx].captureComplete = true;
+          const entry = this._networkEntries[idx];
+          entry.responseFinished = true;
+          // Mirror the extension: a pending request body still completes later.
+          entry.captureComplete = entry.requestBodyPending !== true;
           this._pendingRequests.delete(p.requestId);
         }
       });
@@ -448,8 +463,11 @@ class CDPPage extends CDPBasePage {
   }
 
   async readNetworkCapture(options: { retainIncomplete?: boolean } = {}): Promise<unknown[]> {
-    // Await all in-flight body fetches so entries have responsePreview populated
-    if (this._pendingBodyFetches.size > 0) {
+    // A draining read awaits all in-flight body fetches so entries are fully
+    // populated. A retaining read must not block on them: a slow or stalled
+    // fetch would hold the caller past its deadline instead of returning the
+    // current snapshot while the entry stays retained for a later read.
+    if (!options.retainIncomplete && this._pendingBodyFetches.size > 0) {
       await Promise.all([...this._pendingBodyFetches]);
     }
     const entries = this._networkEntries.map(entry => ({ ...entry }));

@@ -191,12 +191,60 @@ describe('CDPBridge cookies', () => {
     expect(early[0].responsePreview).toBeUndefined();
     fire('Network.responseReceived', { requestId: 'r2', response: { status: 200 } });
     fire('Network.loadingFinished', { requestId: 'r2' });
-    const reading = page.readNetworkCapture?.({ retainIncomplete: true }) as Promise<Array<Record<string, unknown>>>;
     releaseBody({ body: '{"clips":[]}', base64Encoded: false });
-    const completed = await reading;
+    await new Promise(resolve => setTimeout(resolve, 0));
+    const completed = await page.readNetworkCapture?.({ retainIncomplete: true }) as Array<Record<string, unknown>>;
     expect(completed[0]).toMatchObject({ responseStatus: 200, responsePreview: '{"clips":[]}', captureComplete: true });
     expect(completed[0].requestId).toBe('r2');
     expect(await page.readNetworkCapture?.({ retainIncomplete: true })).toEqual([]);
+  });
+
+  it('does not complete a capture before its delayed request post data arrives', async () => {
+    vi.stubEnv('OPENCLI_CDP_ENDPOINT', 'ws://127.0.0.1:9222/devtools/page/1');
+    const bridge = new CDPBridge();
+    let releasePostData!: (value: unknown) => void;
+    const postData = new Promise(resolve => { releasePostData = resolve; });
+    vi.spyOn(bridge, 'send').mockImplementation(async (method: string) =>
+      method === 'Network.getRequestPostData' ? postData : { body: '{"ok":1}', base64Encoded: false });
+    const page = await bridge.connect();
+    await page.startNetworkCapture?.('api.example');
+    const fire = (method: string, params: unknown) => MockWebSocket.lastInstance?.emit('message',
+      Buffer.from(JSON.stringify({ method, params })));
+    fire('Network.requestWillBeSent', { requestId: 'r3', request: { method: 'POST', url: 'https://api.example/gen', hasPostData: true } });
+    fire('Network.responseReceived', { requestId: 'r3', response: { status: 200 } });
+    fire('Network.loadingFinished', { requestId: 'r3' });
+    await new Promise(resolve => setTimeout(resolve, 0));
+    // Response body is settled, but the request body fetch has not landed:
+    // the entry must stay incomplete so a retaining read keeps it.
+    const beforePostData = await page.readNetworkCapture?.({ retainIncomplete: true }) as Array<Record<string, unknown>>;
+    expect(beforePostData[0].responsePreview).toBe('{"ok":1}');
+    expect(beforePostData[0].captureComplete).toBe(false);
+    releasePostData({ postData: '{"mv":"v6"}' });
+    await new Promise(resolve => setTimeout(resolve, 0));
+    const complete = await page.readNetworkCapture?.({ retainIncomplete: true }) as Array<Record<string, unknown>>;
+    expect(complete[0]).toMatchObject({ requestBodyPreview: '{"mv":"v6"}', captureComplete: true });
+    expect(await page.readNetworkCapture?.({ retainIncomplete: true })).toEqual([]);
+  });
+
+  it('returns a retaining snapshot without waiting on a stalled response body fetch', async () => {
+    vi.stubEnv('OPENCLI_CDP_ENDPOINT', 'ws://127.0.0.1:9222/devtools/page/1');
+    const bridge = new CDPBridge();
+    vi.spyOn(bridge, 'send').mockImplementation(async (method: string) =>
+      method === 'Network.getResponseBody' ? new Promise(() => {}) : {});
+    const page = await bridge.connect();
+    await page.startNetworkCapture?.('api.example');
+    const fire = (method: string, params: unknown) => MockWebSocket.lastInstance?.emit('message',
+      Buffer.from(JSON.stringify({ method, params })));
+    fire('Network.requestWillBeSent', { requestId: 'r4', request: { method: 'POST', url: 'https://api.example/gen', postData: '{}', hasPostData: true } });
+    fire('Network.responseReceived', { requestId: 'r4', response: { status: 200 } });
+    fire('Network.loadingFinished', { requestId: 'r4' });
+    const reading = page.readNetworkCapture?.({ retainIncomplete: true }) as Promise<Array<Record<string, unknown>>>;
+    const snapshot = await Promise.race([
+      reading,
+      new Promise((_, reject) => setTimeout(() => reject(new Error('retaining read blocked on a stalled body fetch')), 50)),
+    ]) as Array<Record<string, unknown>>;
+    expect(snapshot[0]).toMatchObject({ requestId: 'r4', responseStatus: 200 });
+    expect(snapshot[0].responsePreview).toBeUndefined();
   });
 });
 
