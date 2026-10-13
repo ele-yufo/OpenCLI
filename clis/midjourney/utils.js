@@ -1250,6 +1250,25 @@ export function verifySubmittedReferences(captures, uploadedUrls, jobIds = []) {
   );
 }
 
+// A freshly dropped thumbnail can take longer than one wait to render; retry
+// a short while, but only while the slot shows FEWER thumbnails than expected.
+// More than expected, a foreign image, or a missing slot fails immediately.
+export async function verifyDropSettled(page, slotHeadings, options) {
+  const deadline = Date.now() + 6000;
+  for (;;) {
+    try {
+      await verifyReferenceTarget(page, slotHeadings, options);
+      return;
+    } catch (error) {
+      const message = error instanceof CommandExecutionError ? error.message : '';
+      const shown = Number(/the slot shows (\d+)/.exec(message)?.[1] ?? Number.NaN);
+      const stillRendering = Number.isInteger(shown) && shown < options.expectedCount;
+      if (!(stillRendering && Date.now() < deadline)) throw error;
+      await page.wait(0.8);
+    }
+  }
+}
+
 export async function uploadReferenceLibrary(page, localPaths) {
   if (!localPaths.length) return [];
   await openImagePanel(page);
@@ -1352,7 +1371,7 @@ export async function uploadReferencesToSlot(page, localPaths, slot) {
     // this drop's image among them) fails a submission whose earlier drop
     // silently missed — the leftover thumbnail of a prior success would
     // otherwise verify the slot.
-    await verifyReferenceTarget(page, label, {
+    await verifyDropSettled(page, label, {
       requireThumbnail: slot !== 'end',
       expectedCount: slot === 'end' ? null : index + 1,
       sourceUrl: url,
