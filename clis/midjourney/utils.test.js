@@ -712,8 +712,11 @@ it('prompt attachments accounted for before the paid submit', async () => {
   await verifyPromptAttachments(pinned, uploaded);
   const stale = panelPage([attachCell({ thumb: 'bg', urls: [THUMB_A, 'https://cdn.midjourney.com/u/other.png'] }), styleCell(), imageCell()]);
   await expect(verifyPromptAttachments(stale, uploaded)).rejects.toThrow(/images this command did not upload/);
-  // No Attach to prompt section (or nothing pinned) is fine.
-  await verifyPromptAttachments(panelPage([styleCell(), imageCell()]), uploaded);
+  // An empty section carries nothing; fine.
+  await verifyPromptAttachments(panelPage([attachCell(), styleCell(), imageCell()]), uploaded);
+  // But with local uploads an unreadable section must stop the submission.
+  await expect(verifyPromptAttachments(panelPage([styleCell(), imageCell()]), uploaded))
+    .rejects.toThrow(/attachments could not be read/);
 });
 
 it('submitted captures must mention every uploaded local reference', async () => {
