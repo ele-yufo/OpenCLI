@@ -26,6 +26,7 @@ import {
   submittedJobIdsFromCaptures,
   uploadedStorageUrlsFromCaptures,
   verifyPromptAttachments,
+  verifyDropSettled,
   verifyReferenceTarget,
   verifySubmittedReferences,
 } from './utils.js';
@@ -685,6 +686,31 @@ it('a failed second drop fails verification: one leftover thumbnail is not two',
     expectedCount: 2,
     sourceUrl: THUMB_B,
   })).rejects.toThrow(/expected 2 thumbnail\(s\), the slot shows 1/);
+});
+
+it('a late-rendering drop verifies after bounded retries, extra thumbnails do not', async () => {
+  panelPage([attachCell(), styleCell(), imageCell({ thumb: 'bg' })]); // installs getComputedStyle
+  const emptyDoc = globalThis.document;
+  panelPage([attachCell(), styleCell(), imageCell()]);
+  const emptyAgain = globalThis.document;
+  panelPage([attachCell(), styleCell(), imageCell({ thumb: 'bg' })]);
+  const filledDoc = globalThis.document;
+  const docs = [emptyDoc, emptyAgain, filledDoc];
+  let phase = 0;
+  const latePage = {
+    wait: async () => {},
+    evaluate: async (fn, ...args) => {
+      globalThis.document = docs[Math.min(phase, docs.length - 1)];
+      phase += 1;
+      return fn(...args);
+    },
+  };
+  await verifyDropSettled(latePage, SLOT_HEADINGS.image, { requireThumbnail: true, expectedCount: 1, sourceUrl: THUMB_A });
+  // More thumbnails than expected is bad state, not rendering lag: no retry.
+  const extra = panelPage([attachCell(), styleCell({ thumb: 'bg', urls: [THUMB_A, THUMB_B] }), imageCell()]);
+  await expect(verifyDropSettled({ wait: async () => {}, evaluate: extra.evaluate }, SLOT_HEADINGS.style, {
+    requireThumbnail: true, expectedCount: 1, sourceUrl: THUMB_A,
+  })).rejects.toThrow(/the slot shows 2/);
 });
 
 it('a slot holding more than the dropped references fails closed', async () => {
