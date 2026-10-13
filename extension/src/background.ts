@@ -2169,7 +2169,7 @@ async function handleNetworkCaptureRead(cmd: Command, leaseKey: string): Promise
   const cmdTabId = await resolveCommandTabId(cmd);
   const tabId = await resolveTabId(cmdTabId, leaseKey);
   try {
-    const data = await executor.readNetworkCapture(tabId);
+    const data = await executor.readNetworkCapture(tabId, cmd.retainIncomplete === true);
     return pageScopedResult(cmd.id, tabId, data);
   } catch (err) {
     return errorResult(cmd.id, err);

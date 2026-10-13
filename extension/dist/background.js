@@ -584,6 +584,7 @@ function getOrCreateNetworkCaptureEntry(tabId, requestId, fallback) {
   if (!shouldCaptureUrl(url, state.patterns)) return null;
   const entry = {
     kind: "cdp",
+    requestId,
     url,
     method: fallback?.method || "GET",
     requestHeaders: fallback?.requestHeaders || {},
@@ -602,12 +603,26 @@ async function startNetworkCapture(tabId, pattern) {
     requestToIndex: /* @__PURE__ */ new Map()
   });
 }
-async function readNetworkCapture(tabId) {
+async function readNetworkCapture(tabId, retainIncomplete = false) {
   const state = networkCaptures.get(tabId);
   if (!state) return [];
-  const entries = state.entries.slice();
-  state.entries = [];
-  state.requestToIndex.clear();
+  const entries = state.entries.map((entry) => ({ ...entry }));
+  if (!retainIncomplete) {
+    state.entries = [];
+    state.requestToIndex.clear();
+    return entries;
+  }
+  const pendingEntries = [];
+  const pendingMap = /* @__PURE__ */ new Map();
+  for (const [requestId, index] of state.requestToIndex) {
+    const entry = state.entries[index];
+    if (entry && !entry.captureComplete) {
+      pendingMap.set(requestId, pendingEntries.length);
+      pendingEntries.push(entry);
+    }
+  }
+  state.entries = pendingEntries;
+  state.requestToIndex = pendingMap;
   return entries;
 }
 function hasActiveNetworkCapture(tabId) {
@@ -680,6 +695,7 @@ function registerListeners() {
           entry.requestBodyFullSize = fullSize;
           entry.requestBodyTruncated = truncated;
         }
+        entry.requestBodyPending = true;
         try {
           const postData = await sendDebuggerCommand({ tabId }, "Network.getRequestPostData", { requestId });
           if (postData?.postData) {
@@ -692,6 +708,9 @@ function registerListeners() {
             entry.requestBodyTruncated = truncated;
           }
         } catch {
+        } finally {
+          entry.requestBodyPending = false;
+          if (entry.responseFinished) entry.captureComplete = true;
         }
       }
       return;
@@ -725,6 +744,20 @@ function registerListeners() {
           entry.responseBodyTruncated = truncated;
         }
       } catch {
+      } finally {
+        entry.responseFinished = true;
+        if (!entry.requestBodyPending) entry.captureComplete = true;
+      }
+      return;
+    }
+    if (method === "Network.loadingFailed") {
+      const requestId = String(eventParams?.requestId || "");
+      const stateEntryIndex = state.requestToIndex.get(requestId);
+      if (stateEntryIndex === void 0) return;
+      const entry = state.entries[stateEntryIndex];
+      if (entry) {
+        entry.responseFinished = true;
+        if (!entry.requestBodyPending) entry.captureComplete = true;
       }
     }
   });
@@ -2493,7 +2526,7 @@ async function handleNetworkCaptureRead(cmd, leaseKey) {
   const cmdTabId = await resolveCommandTabId(cmd);
   const tabId = await resolveTabId(cmdTabId, leaseKey);
   try {
-    const data = await readNetworkCapture(tabId);
+    const data = await readNetworkCapture(tabId, cmd.retainIncomplete === true);
     return pageScopedResult(cmd.id, tabId, data);
   } catch (err) {
     return errorResult(cmd.id, err);
