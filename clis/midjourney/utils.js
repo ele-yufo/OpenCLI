@@ -1199,11 +1199,18 @@ export async function verifyReferenceTarget(page, slotHeadings, { requireThumbna
 // Uploading a local reference also pins it under the panel's "Attach to
 // prompt" heading. Before the paid submit, every pinned image must be one this
 // command uploaded; anything else is stale composer state that would ride
-// along into the submission.
+// along into the submission. When uploads exist but the section cannot be
+// read at all, the accounting is not possible and the submission stops.
 export async function verifyPromptAttachments(page, uploadedUrls) {
   if (!uploadedUrls.length) return;
   const pinned = await readSlotThumbnails(page, SLOT_HEADINGS.attach);
-  if (!pinned || !pinned.length) return;
+  if (pinned === null) {
+    throw new CommandExecutionError(
+      'Midjourney prompt attachments could not be read before submitting',
+      'The Attach to prompt section was not found while local references were uploaded; refusing to submit unaccounted attachments. Re-run the command.',
+    );
+  }
+  if (!pinned.length) return;
   const uploaded = new Set(uploadedUrls.map(refUrlBase));
   const unaccounted = pinned.filter((url) => !uploaded.has(refUrlBase(url)));
   if (unaccounted.length) {
@@ -1215,9 +1222,12 @@ export async function verifyPromptAttachments(page, uploadedUrls) {
 }
 
 // Cross-checks the captured /api/submit-jobs payloads: every uploaded local
-// reference must appear in what was actually submitted. Skipped when no
-// captures exist (older Browser Bridge builds); a mismatch after a submit is
-// reported with the job ids so the spent submission can be identified.
+// reference must appear in what was actually submitted. The interceptor array
+// is scoped: installing the submit-jobs pattern replaces any earlier pattern
+// and the caller drains it before the submit, so the captures here are only
+// this session's submit responses. Skipped when no captures exist (older
+// Browser Bridge builds); a mismatch after a submit is reported with the job
+// ids so the spent submission can be identified.
 export function verifySubmittedReferences(captures, uploadedUrls, jobIds = []) {
   if (!uploadedUrls.length || !Array.isArray(captures) || !captures.length) return;
   // Normalize both sides: submitted prompts embed resized `_<size>_N` variants
