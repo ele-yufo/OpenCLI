@@ -480,7 +480,7 @@ describe('cdp network capture correctness', () => {
     const debuggerApi = {
       attach: vi.fn(async () => {}),
       detach: vi.fn(async () => {}),
-      sendCommand: vi.fn(async (_target, method, params) => {
+      sendCommand: vi.fn(async (_target: unknown, method: string, params?: { expression?: string }): Promise<unknown> => {
         if (method === 'Runtime.evaluate' && params?.expression === '1') return { result: { value: '1' } };
         if (method === 'Network.getRequestPostData') return {}; // no override; use inline postData
         return {};
@@ -526,6 +526,40 @@ describe('cdp network capture correctness', () => {
     expect(entries).toHaveLength(1);
     expect(entries[0].requestBodyPreview).toBe('user=a&pass=b');
     expect(entries[0].requestBodyKind).toBe('string');
+  });
+
+  it('keeps default drain behavior and does not resurrect a late response', async () => {
+    const mock = createNetworkMock();
+    vi.stubGlobal('chrome', mock.chrome);
+    const mod = await import('./cdp');
+    mod.registerListeners();
+    await mod.startNetworkCapture(1, 'api.example');
+    await mock.fire('Network.requestWillBeSent', { requestId: 'drain', request: { url: 'https://api.example/x', method: 'GET' } });
+    expect(await mod.readNetworkCapture(1)).toHaveLength(1);
+    await mock.fire('Network.responseReceived', { requestId: 'drain', response: { status: 200 } });
+    await mock.fire('Network.loadingFinished', { requestId: 'drain' });
+    expect(await mod.readNetworkCapture(1, true)).toEqual([]);
+  });
+
+  it('reindexes pending requests after failed captures are drained', async () => {
+    const mock = createNetworkMock();
+    mock.chrome.debugger.sendCommand = vi.fn(async (_target: unknown, method: string) =>
+      method === 'Network.getResponseBody' ? { body: 'body' } : {});
+    vi.stubGlobal('chrome', mock.chrome);
+    const mod = await import('./cdp');
+    mod.registerListeners();
+    await mod.startNetworkCapture(1, 'api.example');
+    for (const requestId of ['done', 'pending']) {
+      await mock.fire('Network.requestWillBeSent', { requestId, request: { url: 'https://api.example/' + requestId, method: 'GET' } });
+    }
+    await mock.fire('Network.loadingFailed', { requestId: 'done' });
+    expect(await mod.readNetworkCapture(1, true)).toHaveLength(2);
+    await mock.fire('Network.responseReceived', { requestId: 'pending', response: { status: 201 } });
+    await mock.fire('Network.loadingFinished', { requestId: 'pending' });
+    expect(await mod.readNetworkCapture(1, true)).toEqual([
+      expect.objectContaining({ requestId: 'pending', responseStatus: 201, responsePreview: 'body', captureComplete: true }),
+    ]);
+    expect(await mod.readNetworkCapture(1, true)).toEqual([]);
   });
 
   it('retains an in-flight entry until its response body is captured', async () => {

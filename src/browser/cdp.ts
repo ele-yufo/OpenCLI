@@ -355,6 +355,9 @@ class CDPPage extends CDPBasePage {
           };
           timestamp: number;
         };
+        // Redirect hops reuse the request ID. Keep the original request/body
+        // and settle it from the final response instead of retaining an orphan.
+        if (this._pendingRequests.has(p.requestId)) return;
         if (!this._networkCapturePattern || p.request.url.includes(this._networkCapturePattern)) {
           const rawBody = typeof p.request.postData === 'string' ? p.request.postData : '';
           const bodyTruncated = rawBody.length > CDP_REQUEST_BODY_CAPTURE_LIMIT;

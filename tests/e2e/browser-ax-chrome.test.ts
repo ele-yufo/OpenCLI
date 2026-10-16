@@ -6,6 +6,7 @@ import * as os from 'node:os';
 import * as path from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { WebSocketServer, type WebSocket } from 'ws';
+import { CDPBridge } from '../../src/browser/cdp.js';
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 const ROOT = path.resolve(__dirname, '../..');
@@ -25,6 +26,8 @@ type Command = {
   files?: string[];
   selector?: string;
   windowMode?: 'foreground' | 'background';
+  retainIncomplete?: boolean;
+  pattern?: string;
   cdpMethod?: string;
   cdpParams?: Record<string, unknown>;
 };
@@ -45,6 +48,7 @@ type FakeBridge = {
 
 type TestSite = {
   url: string;
+  releaseCapture: () => void;
   close: () => Promise<void>;
 };
 
@@ -147,8 +151,22 @@ async function startFakeBridge(): Promise<FakeBridge | null> {
 }
 
 async function startTestSite(): Promise<TestSite> {
+  const pending = new Set<ServerResponse>();
+  const releaseCapture = () => { for (const res of pending) res.end('true}'); pending.clear(); };
   const server = createServer((req: IncomingMessage, res: ServerResponse) => {
     const url = new URL(req.url ?? '/', 'http://a.opencli.test');
+    if (url.pathname === '/capture-start') {
+      res.writeHead(302, { Location: '/capture-held' });
+      res.end();
+      return;
+    }
+    if (url.pathname === '/capture-held') {
+      res.writeHead(200, { 'Content-Type': 'application/json' });
+      res.write('{"done":');
+      pending.add(res);
+      res.on('close', () => pending.delete(res));
+      return;
+    }
     res.setHeader('Content-Type', 'text/html; charset=utf-8');
     if (url.pathname === '/upload') {
       res.end(`<!doctype html>
@@ -192,6 +210,7 @@ async function startTestSite(): Promise<TestSite> {
   const port = addressPort(server);
   return {
     url: `http://a.opencli.test:${port}/`,
+    releaseCapture,
     close: async () => {
       await new Promise<void>((resolve, reject) => {
         server.close((err) => err ? reject(err) : resolve());
@@ -369,6 +388,58 @@ describe('Browser Bridge AX real Chrome smoke', () => {
       }
     }
   });
+
+  it('retains a redirected streaming response across reads in both backends', async () => {
+    if (skipReason) {
+      if (shouldFailOnBridgeUnavailable()) throw new Error(skipReason);
+      console.warn(`skipped — ${skipReason}`);
+      return;
+    }
+    const script = `(() => { void fetch('/capture-start', { method: 'POST', body: 'original payload' }).then(r => r.text()); return true; })()`;
+    const port = fs.readFileSync(path.join(userDataDir, 'DevToolsActivePort'), 'utf8').split('\n')[0];
+    const direct = new CDPBridge();
+    try {
+      const page = await direct.connect({ cdpEndpoint: `http://127.0.0.1:${port}` });
+      for (const backend of ['direct', 'extension']) {
+        const session = `capture-${backend}-${Date.now()}`;
+        const command = async (cmd: Omit<Command, 'id'>) => {
+          const result = await bridge!.sendCommand({ ...cmd, session, surface: 'browser' });
+          expect(result.ok, result.error).toBe(true);
+          return result.data;
+        };
+        if (backend === 'direct') {
+          await page.goto(new URL('/same-frame', site!.url).href);
+          await page.startNetworkCapture?.('capture-');
+          await page.evaluate(script);
+        } else {
+          await command({ action: 'navigate', url: new URL('/same-frame', site!.url).href });
+          await command({ action: 'network-capture-start', pattern: 'capture-' });
+          await command({ action: 'exec', code: script });
+        }
+        const read = async () => (backend === 'direct'
+          ? await page.readNetworkCapture?.({ retainIncomplete: true })
+          : await command({ action: 'network-capture-read', retainIncomplete: true })) as Array<Record<string, unknown>>;
+        const poll = async (complete: boolean) => {
+          for (let i = 0; i < 100; i++) {
+            const entries = await read();
+            const entry = entries.find(item => item.responseStatus === 200 && (item.captureComplete === true) === complete);
+            if (entry) { expect(entries).toHaveLength(1); return entry; }
+            await new Promise(resolve => setTimeout(resolve, 50));
+          }
+          throw new Error(`${backend}: missing ${complete ? 'completed' : 'incomplete'} capture`);
+        };
+        const early = await poll(false);
+        expect(early.responsePreview).toBeUndefined();
+        site!.releaseCapture();
+        const final = await poll(true);
+        expect(final).toMatchObject({ requestId: early.requestId, method: 'POST', requestBodyPreview: 'original payload', responsePreview: '{"done":true}' });
+        expect(await read()).toEqual([]);
+      }
+    } finally {
+      site!.releaseCapture();
+      await direct.close();
+    }
+  }, 60_000);
 
   it('closes only the owned tab through the real cleanup protocol', async () => {
     if (skipReason) {
