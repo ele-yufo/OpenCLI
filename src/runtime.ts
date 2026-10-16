@@ -1,17 +1,16 @@
 import { BrowserBridge, CDPBridge } from './browser/index.js';
 import type { IPage } from './types.js';
 import { TimeoutError } from './errors.js';
-import { isElectronApp } from './electron-apps.js';
 import { DEFAULT_BROWSER_COMMAND_TIMEOUT, DEFAULT_BROWSER_CONNECT_TIMEOUT } from './browser/config.js';
 
 export { DEFAULT_BROWSER_COMMAND_TIMEOUT, DEFAULT_BROWSER_CONNECT_TIMEOUT };
 
 /**
- * Returns the appropriate browser factory based on site type.
- * Uses CDPBridge for registered Electron apps, otherwise BrowserBridge.
+ * Returns the appropriate browser factory based on explicit configuration.
+ * A manual CDP endpoint uses CDPBridge; otherwise use BrowserBridge.
  */
-export function getBrowserFactory(site?: string): new () => IBrowserFactory {
-  if (site && isElectronApp(site)) return CDPBridge;
+export function getBrowserFactory(): new () => IBrowserFactory {
+  if (process.env.OPENCLI_CDP_ENDPOINT) return CDPBridge;
   return BrowserBridge;
 }
 

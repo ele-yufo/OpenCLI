@@ -1548,6 +1548,62 @@ describe('chatgpt generated image detection', () => {
         ]);
     });
 
+    it('ignores user-uploaded previews labeled by the Chinese UI', async () => {
+        const page = createDomPage(`
+            <!doctype html>
+            <button aria-label="打开图片 1 / 2 用户上传的图片">
+              <img alt="" src="https://chatgpt.com/backend-api/files/reference">
+            </button>
+            <section data-testid="conversation-turn-2">
+              <h4>ChatGPT said:</h4>
+              <img alt="generated image" src="https://chatgpt.com/backend-api/generated/foo.webp">
+            </section>
+        `, (window) => {
+            for (const img of window.document.querySelectorAll('img')) {
+                Object.defineProperty(img, 'naturalWidth', { configurable: true, value: 512 });
+                Object.defineProperty(img, 'naturalHeight', { configurable: true, value: 512 });
+                img.getBoundingClientRect = () => ({ width: 512, height: 512 });
+            }
+        });
+
+        await expect(getChatGPTVisibleImageUrls(page)).resolves.toEqual([
+            'https://chatgpt.com/backend-api/generated/foo.webp',
+        ]);
+    });
+
+    it('ignores multiple upload-preview thumbnails via data-turn before their alt/aria-label metadata populate', async () => {
+        // Reproduces a real regression: uploading 2+ reference images made
+        // waitForChatGPTImages return the just-uploaded thumbnails instead of
+        // the actual generated image. Right after upload, a thumbnail's alt
+        // text and "Open image N of M: <name>" aria-label haven't populated
+        // yet, so the old alt/aria-label-only fallback couldn't tell them
+        // apart from a real result during that window. `data-turn` on the
+        // turn <section> is set immediately and must be checked first.
+        const page = createDomPage(`
+            <!doctype html>
+            <section data-testid="conversation-turn-1" data-turn="user">
+              <h4>You said:</h4>
+              <img alt="" src="https://chatgpt.com/backend-api/uploaded/ref-1.png">
+              <img alt="" src="https://chatgpt.com/backend-api/uploaded/ref-2.png">
+              <img alt="" src="https://chatgpt.com/backend-api/uploaded/ref-3.png">
+            </section>
+            <section data-testid="conversation-turn-2" data-turn="assistant">
+              <h4>ChatGPT said:</h4>
+              <img alt="Generated image: result" src="https://chatgpt.com/backend-api/generated/foo.webp">
+            </section>
+        `, (window) => {
+            for (const img of window.document.querySelectorAll('img')) {
+                Object.defineProperty(img, 'naturalWidth', { configurable: true, value: 512 });
+                Object.defineProperty(img, 'naturalHeight', { configurable: true, value: 512 });
+                img.getBoundingClientRect = () => ({ width: 512, height: 512 });
+            }
+        });
+
+        await expect(getChatGPTVisibleImageUrls(page)).resolves.toEqual([
+            'https://chatgpt.com/backend-api/generated/foo.webp',
+        ]);
+    });
+
     it('keeps assistant generated images even when they are inside an open-image button', async () => {
         const page = createDomPage(`
             <!doctype html>
@@ -1567,6 +1623,24 @@ describe('chatgpt generated image detection', () => {
         await expect(getChatGPTVisibleImageUrls(page)).resolves.toEqual([
             'https://chatgpt.com/backend-api/generated/foo.webp',
         ]);
+    });
+
+    it('recognizes the "Open image N of M: name" aria-label ChatGPT uses for multi-attachment uploads', async () => {
+        const page = createDomPage(`
+            <!doctype html>
+            <section data-testid="conversation-turn-1">
+              <button aria-label="Open image 1 of 3: reference.png">
+                <img alt="" src="https://chatgpt.com/backend-api/uploaded/reference.png">
+              </button>
+            </section>
+        `, (window) => {
+            const img = window.document.querySelector('img');
+            Object.defineProperty(img, 'naturalWidth', { configurable: true, value: 512 });
+            Object.defineProperty(img, 'naturalHeight', { configurable: true, value: 512 });
+            img.getBoundingClientRect = () => ({ width: 512, height: 512 });
+        });
+
+        await expect(getChatGPTVisibleImageUrls(page)).resolves.toEqual([]);
     });
 
     it('exports assets for generated CSS background images', async () => {
@@ -1595,6 +1669,23 @@ describe('chatgpt generated image detection', () => {
 });
 
 describe('chatgpt image upload helper', () => {
+    it('recognizes exact visible attachment labels inside the composer, not history or hidden chips', async () => {
+        const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'opencli-chatgpt-'));
+        tempDirs.push(dir);
+        const filePath = path.join(dir, 'cat.png');
+        fs.writeFileSync(filePath, 'fake-png');
+        for (const state of ['ready', 'hidden', 'wrong-name', 'history']) {
+            const dom = new JSDOM(`<main><section id="history"></section><form><div role="group" aria-label="${state === 'wrong-name' ? 'not-cat.png' : 'cat.png'}" style="${state === 'hidden' ? 'display:none' : ''}"></div><div id="prompt-textarea" contenteditable="true"></div></form></main>`, { url: 'https://chatgpt.com/new', runScripts: 'outside-only' });
+            const chip = dom.window.document.querySelector('[role="group"]');
+            chip.getBoundingClientRect = () => ({ width: 100, height: 30 });
+            if (state === 'history') dom.window.document.querySelector('#history').append(chip);
+            const page = { setFileInput: vi.fn(), wait: vi.fn(), sleep: vi.fn(), evaluate: vi.fn(script => dom.window.eval(script)) };
+            const result = await uploadChatGPTImages(page, [filePath]);
+            expect(result.ok, state).toBe(state === 'ready');
+            dom.window.close();
+        }
+    });
+
     it('validates local images without a browser page', async () => {
         const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'opencli-chatgpt-'));
         tempDirs.push(dir);
@@ -2066,5 +2157,78 @@ describe('chatgpt project file upload helper', () => {
             ok: false,
             reason: expect.stringContaining('project knowledge surface'),
         });
+    });
+});
+
+describe('chatgpt October 2026 redesign markup', () => {
+    it('keeps identical turns while deduplicating nested markup and reading the role suffix', async () => {
+        const page = createDomEvaluatePage([0, 1].map(index => `
+            <article data-testid="conversation-turn-${index}" data-chatgpt-search-unit-key="assistant-topic-${index}:user">
+                <div data-message-author-role="user"><div class="markdown">Again</div></div>
+            </article>
+            <article data-chatgpt-search-unit-key="turn-${index}:assistant">
+                <div data-message-author-role="assistant"><div class="markdown">Same answer</div></div>
+            </article>
+        `).join(''));
+        for (const node of page.dom.window.document.querySelectorAll('*')) {
+            node.getBoundingClientRect = () => ({ width: 120, height: 36 });
+        }
+        try {
+            const rows = await getVisibleMessages(page, { textOnly: true });
+            expect(rows.map(row => [row.Role, row.Text])).toEqual([
+                ['User', 'Again'], ['Assistant', 'Same answer'],
+                ['User', 'Again'], ['Assistant', 'Same answer'],
+            ]);
+        } finally { page.dom.window.close(); }
+    });
+
+    it('reads search-unit turns and strips tool chips from the user prompt', async () => {
+        const page = createDomEvaluatePage(`
+            <div data-chatgpt-search-unit-key="fallback-turn-0:0:user">
+              <div data-user-message-bubble="true">
+                <div data-search-result-target="">
+                  <p><span data-prompt-link-href="chatgpt-system-hint://search" data-prompt-link-label="Web search">Web search</span>find the release date</p>
+                </div>
+                <button aria-label="Copy message">copy</button>
+              </div>
+            </div>
+            <div data-chatgpt-search-unit-key="fallback-turn-0:2:assistant">
+              <h4 data-conversation-role="assistant">ChatGPT said:</h4>
+              <div data-markdown-copy="contents"><p>It shipped on 6 May 2025.</p></div>
+            </div>
+        `);
+        for (const node of page.dom.window.document.querySelectorAll('*')) {
+            node.getBoundingClientRect = () => ({ width: 120, height: 36 });
+        }
+
+        await expect(getVisibleMessages(page, { textOnly: true })).resolves.toEqual([
+            { Index: 1, Role: 'User', Text: 'find the release date', Html: '' },
+            { Index: 2, Role: 'Assistant', Text: 'It shipped on 6 May 2025.', Html: '' },
+        ]);
+    });
+
+    it('reads Deep Research sources from report_message citations', () => {
+        const payload = makeDeepResearchPayload();
+        const state = JSON.parse(payload.mapping.report_node.message.metadata.chatgpt_sdk.widget_state);
+        state.report_message.metadata = {
+            citations: [{ metadata: { title: 'Cited E', url: 'https://example.com/e#:~:text=quote' } }],
+        };
+        payload.mapping.report_node.message.metadata.chatgpt_sdk.widget_state = JSON.stringify(state);
+
+        const result = __test__.extractDeepResearchFromConversationPayload(payload);
+
+        expect(result.sources).toEqual([{ title: 'Cited E', url: 'https://example.com/e' }]);
+    });
+
+    it('ignores conversation sub-resource responses in network capture', () => {
+        const result = __test__.extractDeepResearchFromNetworkEntries([
+            { url: 'https://chatgpt.com/backend-api/conversation/requested123/stream_status', responsePreview: '{"status":"done"}' },
+            {
+                url: 'https://chatgpt.com/backend-api/conversation/requested123',
+                responsePreview: JSON.stringify(makeDeepResearchPayload(makeDeepResearchReport(), { conversationId: 'requested123' })),
+            },
+        ], { expectedConversationId: 'requested123' });
+
+        expect(result.status).toBe('completed');
     });
 });

@@ -5,14 +5,13 @@
  */
 
 import { DEFAULT_DAEMON_PORT } from './constants.js';
-import { BrowserBridge } from './browser/index.js';
-import { setDaemonCommandTimeoutSeconds } from './browser/daemon-client.js';
+import { MIN_JOURNAL_EXTENSION_VERSION, sendCommand, setDaemonCommandTimeoutSeconds, supportsCommandJournal } from './browser/daemon-client.js';
 import { getDaemonHealth } from './browser/daemon-transport.js';
 import { getErrorMessage } from './errors.js';
 import { getRuntimeLabel } from './runtime-detect.js';
 import { getCachedLatestExtensionVersion } from './update-check.js';
 import type { BrowserProfileStatus } from './browser/daemon-transport.js';
-import { aliasForContextId, loadProfileConfig } from './browser/profile.js';
+import { aliasForContextId, loadProfileConfig, profileRouteParams, resolveProfileSelection } from './browser/profile.js';
 import { formatDaemonVersion, isDaemonStale, staleDaemonIssue } from './browser/daemon-version.js';
 import { findShadowedUserAdapters, formatAdapterShadowIssue, type AdapterShadow } from './adapter-shadow.js';
 
@@ -68,6 +67,7 @@ export type DoctorReport = {
   extensionConnected: boolean;
   extensionFlaky?: boolean;
   extensionVersion?: string;
+  extensionOutdated?: boolean;
   latestExtensionVersion?: string;
   connectivity?: ConnectivityResult;
   profiles?: BrowserProfileStatus[];
@@ -76,7 +76,8 @@ export type DoctorReport = {
 };
 
 /**
- * Test connectivity by attempting a real browser command.
+ * Test connectivity with a daemon-to-extension command that does not resolve a
+ * page or create a Browser Bridge container window.
  */
 export async function checkConnectivity(opts?: { timeout?: number }): Promise<ConnectivityResult> {
   const start = Date.now();
@@ -85,19 +86,11 @@ export async function checkConnectivity(opts?: { timeout?: number }): Promise<Co
   // hung daemon/extension fails the check in seconds, not the default 120s.
   setDaemonCommandTimeoutSeconds(timeoutSeconds);
   try {
-    const bridge = new BrowserBridge();
-    const page = await bridge.connect({
-      timeout: timeoutSeconds,
+    await sendCommand('cookies', {
+      domain: 'opencli-probe.invalid',
       session: DOCTOR_SESSION,
       surface: 'browser',
     });
-    try {
-      // Try a simple eval to verify end-to-end connectivity.
-      await page.evaluate('1 + 1');
-      await page.closeWindow?.();
-    } finally {
-      await bridge.close();
-    }
     return { ok: true, durationMs: Date.now() - start };
   } catch (err) {
     return { ok: false, error: getErrorMessage(err), durationMs: Date.now() - start };
@@ -107,12 +100,14 @@ export async function checkConnectivity(opts?: { timeout?: number }): Promise<Co
 }
 
 export async function runBrowserDoctor(opts: DoctorOptions = {}): Promise<DoctorReport> {
-  // Live connectivity check is the core of doctor — it doubles as auto-start
-  // (bridge.connect spawns daemon) and validates end-to-end browser bridge health.
+  // Live connectivity is the core of doctor. The command transport doubles as
+  // daemon auto-start and validates end-to-end Browser Bridge health.
   const connectivity = await checkConnectivity();
 
-  // Single status read *after* connectivity side-effects settle.
-  const health = await getDaemonHealth();
+  // Single status read *after* connectivity side-effects settle. Threads the
+  // profile selection like command dispatch does, so a configured default is
+  // arbitrated instead of read as multi-profile ambiguity (#2259).
+  const health = await getDaemonHealth(profileRouteParams(resolveProfileSelection()));
   const daemonRunning = health.state !== 'stopped';
   const extensionConnected = health.state === 'ready';
   const daemonFlaky = connectivity.ok && !daemonRunning;
@@ -120,6 +115,7 @@ export async function runBrowserDoctor(opts: DoctorOptions = {}): Promise<Doctor
   const daemonStale = isDaemonStale(health.status, opts.cliVersion);
   const profiles = health.status?.profiles;
   const extensionVersion = health.status?.extensionVersion;
+  let extensionOutdated = false;
   const adapterShadows = findShadowedUserAdapters();
 
   const issues: string[] = [];
@@ -198,21 +194,19 @@ export async function runBrowserDoctor(opts: DoctorOptions = {}): Promise<Doctor
         '  Or download a compatible extension from: https://github.com/jackwener/opencli/releases',
       );
     }
-  } else if (extensionVersion && opts.cliVersion) {
-    // Fallback for older extensions that don't send compatRange
-    const extMajor = extensionVersion.split('.')[0];
-    const cliMajor = opts.cliVersion.split('.')[0];
-    if (extMajor !== cliMajor) {
-      issues.push(
-        `Extension major version mismatch: extension v${extensionVersion} ≠ CLI v${opts.cliVersion}\n` +
-        '  Download the latest extension from: https://github.com/jackwener/opencli/releases',
-      );
-    }
+  }
+  if (extensionVersion && !supportsCommandJournal(extensionVersion, health.status?.extensionCompatRange)) {
+    extensionOutdated = true;
+    issues.push(
+      `Extension v${extensionVersion} does not report command journal support (introduced in v${MIN_JOURNAL_EXTENSION_VERSION}).\n` +
+      '  Automatic retries are limited; update the extension from: https://github.com/jackwener/opencli/releases',
+    );
   }
 
   // Extension update check (from cached background fetch)
   const latestExtensionVersion = getCachedLatestExtensionVersion();
   if (extensionVersion && latestExtensionVersion && isNewerVersion(latestExtensionVersion, extensionVersion)) {
+    extensionOutdated = true;
     issues.push(
       `Extension update available: v${extensionVersion} → v${latestExtensionVersion}\n` +
       '  Download from: https://github.com/jackwener/opencli/releases',
@@ -231,6 +225,7 @@ export async function runBrowserDoctor(opts: DoctorOptions = {}): Promise<Doctor
     extensionConnected,
     extensionFlaky,
     extensionVersion,
+    extensionOutdated,
     latestExtensionVersion,
     connectivity,
     profiles,
@@ -258,7 +253,7 @@ export function renderBrowserDoctorReport(report: DoctorReport): string {
   lines.push(`${daemonIcon} Daemon: ${daemonLabel}`);
 
   // Extension status
-  const extIcon = report.extensionFlaky || (report.extensionConnected && !report.extensionVersion)
+  const extIcon = report.extensionFlaky || report.extensionOutdated || (report.extensionConnected && !report.extensionVersion)
     ? '[WARN]'
     : report.extensionConnected ? '[OK]' : '[MISSING]';
   const extUpdateHint = report.extensionVersion && report.latestExtensionVersion && isNewerVersion(report.latestExtensionVersion, report.extensionVersion)

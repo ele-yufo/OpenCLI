@@ -445,6 +445,22 @@ describe('Page active target tracking', () => {
     }));
   });
 
+  it('keeps the fresh active binding when closing an exact old page', async () => {
+    sendCommandMock.mockResolvedValueOnce({ closed: 'page-old' });
+
+    const page = new Page('site:xiaohongshu');
+    page.setActivePage?.('page-fresh');
+    await page.closeTab?.('page-old');
+
+    expect(sendCommandMock).toHaveBeenCalledWith('tabs', expect.objectContaining({
+      op: 'close',
+      session: 'site:xiaohongshu',
+      surface: 'browser',
+      page: 'page-old',
+    }));
+    expect(page.getActivePage()).toBe('page-fresh');
+  });
+
   it('clears the active page binding when closing the selected tab by numeric index', async () => {
     sendCommandFullMock.mockResolvedValueOnce({ data: { selected: true }, page: 'page-2' });
     sendCommandMock
@@ -505,5 +521,16 @@ describe('Page.screenshot', () => {
     expect(args.width).toBeUndefined();
     expect(args.height).toBeUndefined();
     expect(args.fullPage).toBeUndefined();
+  });
+});
+
+describe('Page.getCookies error classification', () => {
+  it.each([null, undefined, {}, { error: 'disconnected' }, [null], [{ name: 'sid' }]])('rejects malformed transport data %j instead of returning anonymous cookies', async result => {
+    sendCommandMock.mockReset().mockResolvedValue(result);
+    await expect(new Page('auth').getCookies({ url: 'https://example.com' })).rejects.toMatchObject({ code: 'COMMAND_EXEC' });
+  });
+  it('preserves a valid empty cookie jar', async () => {
+    sendCommandMock.mockReset().mockResolvedValue([]);
+    await expect(new Page('auth').getCookies({ url: 'https://example.com' })).resolves.toEqual([]);
   });
 });

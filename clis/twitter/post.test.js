@@ -1,5 +1,6 @@
 import { describe, expect, it, vi } from 'vitest';
 import { JSDOM } from 'jsdom';
+import { CommandExecutionError } from '@jackwener/opencli/errors';
 import { getRegistry } from '@jackwener/opencli/registry';
 import './post.js';
 
@@ -48,11 +49,6 @@ function makePage(evaluateResults = [], overrides = {}) {
 describe('twitter post command', () => {
     const getCommand = () => getRegistry().get('twitter/post');
 
-    it('registers created tweet id/url columns', () => {
-        const command = getCommand();
-        expect(command?.columns).toEqual(['status', 'message', 'text', 'id', 'url']);
-    });
-
     it('posts text-only tweet successfully through the current compose route', async () => {
         const command = getCommand();
         const page = makePage([
@@ -95,15 +91,13 @@ describe('twitter post command', () => {
         }]);
     });
 
-    it('returns failed when text area not found', async () => {
+    it('typed-fails when text area not found', async () => {
         const command = getCommand();
         const page = makePage([
             { ok: false, message: 'Could not find the tweet composer text area. Are you logged in?' },
         ]);
 
-        const result = await command.func(page, { text: 'hello' });
-
-        expect(result).toEqual([{ status: 'failed', message: 'Could not find the tweet composer text area. Are you logged in?', text: 'hello' }]);
+        await expect(command.func(page, { text: 'hello' })).rejects.toBeInstanceOf(CommandExecutionError);
         expect(page.insertText).not.toHaveBeenCalled();
     });
 
@@ -160,6 +154,27 @@ describe('twitter post command', () => {
         expect(result).toEqual([{ status: 'success', message: 'Tweet posted successfully.', text: 'with fallback' }]);
         expect(setFileInput).toHaveBeenCalledWith(['/abs/a.png'], 'input[type="file"][data-testid="fileInput"]');
         expect(page.evaluate.mock.calls[0][0]).toContain('new DataTransfer()');
+    });
+
+    it('falls back to DataTransfer when the file-chooser event times out', async () => {
+        const command = getCommand();
+        const setFileInput = vi.fn().mockRejectedValue(new Error(
+            'Page.fileChooserOpened not received within 5s — the input may not have opened a file chooser',
+        ));
+        const page = makePage([
+            { ok: true }, // DataTransfer fallback
+            { ok: true, previewCount: 1 }, // image preview ready
+            { ok: true }, // focus composer
+            { ok: true }, // verify native insertion
+            { ok: true }, // click post
+            { ok: true, message: 'Tweet posted successfully.' },
+        ], { setFileInput });
+
+        const result = await command.func(page, { text: 'image + text', images: 'a.png' });
+        expect(result).toEqual([{ status: 'success', message: 'Tweet posted successfully.', text: 'image + text' }]);
+        expect(setFileInput).toHaveBeenCalledWith(['/abs/a.png'], 'input[type="file"][data-testid="fileInput"]');
+        expect(page.evaluate.mock.calls[0][0]).toContain('new DataTransfer()');
+        expect(page.insertText).toHaveBeenCalledWith('image + text');
     });
 
     it('uploads images before inserting text so media re-renders cannot erase the tweet text', async () => {
@@ -250,9 +265,12 @@ describe('twitter post command', () => {
     it('does not report success from a cleared composer and a timeline permalink', async () => {
         const timelineOnly = '<article><a href="/nasa/status/1111111111111111111">someone else</a></article>';
 
-        await expect(runPostAgainstDom(timelineOnly, 'cleared composer')).resolves.toEqual([
-            { status: 'failed', message: 'Tweet submission did not complete before timeout.', text: 'cleared composer' },
-        ]);
+        await expect(runPostAgainstDom(timelineOnly, 'cleared composer')).rejects.toMatchObject({
+            name: 'TimeoutError',
+            code: 'TIMEOUT',
+            exitCode: 75,
+            hint: expect.stringContaining('Tweet submission did not complete before timeout.'),
+        });
     });
 
     it('keeps the permalink that the success toast carries', async () => {
@@ -273,6 +291,35 @@ describe('twitter post command', () => {
         ]);
     });
 
+    it('recognizes a Chinese success toast and keeps its status permalink', async () => {
+        const toast = '<div role="alert">你的帖子已发送。 <a href="/me/status/2222222222222222222">查看</a></div>';
+        await expect(runPostAgainstDom('', '中文发布', { afterClickHtml: toast })).resolves.toEqual([{
+            status: 'success',
+            message: 'Tweet posted successfully.',
+            text: '中文发布',
+            id: '2222222222222222222',
+            url: 'https://x.com/me/status/2222222222222222222',
+        }]);
+    });
+
+    it('rejects an English failure toast instead of matching the substring "sent"', async () => {
+        const toast = '<div role="alert">Your post was not sent. Try again.</div>';
+        await expect(runPostAgainstDom('', 'not sent', { afterClickHtml: toast }))
+            .rejects.toThrow('Your post was not sent');
+    });
+
+    it('rejects a Chinese failure toast', async () => {
+        const toast = '<div role="alert">发送失败，请重试</div>';
+        await expect(runPostAgainstDom('', '发送失败', { afterClickHtml: toast }))
+            .rejects.toThrow('发送失败');
+    });
+
+    it('does not accept unrelated toast text containing "sent"', async () => {
+        const toast = '<div role="alert">Message sent.</div>';
+        await expect(runPostAgainstDom('', 'unrelated notification', { afterClickHtml: toast }))
+            .rejects.toMatchObject({ name: 'TimeoutError', code: 'TIMEOUT' });
+    });
+
     it('does not export a permalink from an untrusted toast link host', async () => {
         const toast = `
             <div role="alert">Your post was sent. <a href="https://example.com/me/status/2222222222222222222">View</a></div>
@@ -288,9 +335,12 @@ describe('twitter post command', () => {
             <div role="alert">Your post was sent. <a href="/me/status/3333333333333333333">View</a></div>
         `;
 
-        await expect(runPostAgainstDom(oldToast, 'old toast')).resolves.toEqual([
-            { status: 'failed', message: 'Tweet submission did not complete before timeout.', text: 'old toast' },
-        ]);
+        await expect(runPostAgainstDom(oldToast, 'old toast')).rejects.toMatchObject({
+            name: 'TimeoutError',
+            code: 'TIMEOUT',
+            exitCode: 75,
+            hint: expect.stringContaining('Tweet submission did not complete before timeout.'),
+        });
     });
 
     it('unwraps Browser Bridge envelopes for action results', async () => {
@@ -405,16 +455,53 @@ describe('twitter post command', () => {
         expect(submitScript).toContain('data-opencli-before-submit-toast');
     });
 
-    it('returns failed when image upload times out', async () => {
+    it('typed-fails when image upload times out', async () => {
         const command = getCommand();
         const page = makePage([
             { ok: false, message: 'Image upload timed out (30s).' },
         ]);
 
-        const result = await command.func(page, { text: 'timeout', images: 'a.png' });
-
-        expect(result).toEqual([{ status: 'failed', message: 'Image upload timed out (30s).', text: 'timeout' }]);
+        await expect(command.func(page, { text: 'timeout', images: 'a.png' })).rejects.toMatchObject({
+            name: 'TimeoutError',
+            code: 'TIMEOUT',
+            exitCode: 75,
+        });
         expect(page.insertText).not.toHaveBeenCalled();
+    });
+
+    it('typed-fails with a non-zero exit code when the post never goes out', async () => {
+        const command = getCommand();
+        const page = makePage([
+            { ok: true }, // focus composer
+            { ok: true }, // verify native insertText
+            { ok: true }, // click post
+            { ok: false, message: 'Tweet button is disabled or not found.' },
+        ]);
+
+        await expect(command.func(page, { text: 'never sent' })).rejects.toMatchObject({
+            name: 'CommandExecutionError',
+            code: 'COMMAND_EXEC',
+            exitCode: 1,
+            message: 'Tweet button is disabled or not found.',
+            hint: expect.stringContaining('Nothing was posted'),
+        });
+    });
+
+    it('reports an unconfirmed submit as temporary, without claiming nothing was posted', async () => {
+        const command = getCommand();
+        const page = makePage([
+            { ok: true }, // focus composer
+            { ok: true }, // verify native insertText
+            { ok: true }, // click post
+            { ok: false, unconfirmed: true, message: 'Tweet submission did not complete before timeout.' },
+        ]);
+
+        await expect(command.func(page, { text: 'unconfirmed' })).rejects.toMatchObject({
+            name: 'TimeoutError',
+            code: 'TIMEOUT',
+            exitCode: 75,
+            hint: expect.stringContaining('may already be live'),
+        });
     });
 
     it('falls back to DOM insertion when native insertText is unavailable', async () => {

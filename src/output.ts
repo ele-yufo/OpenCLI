@@ -4,6 +4,7 @@
 
 import Table from 'cli-table3';
 import yaml from 'js-yaml';
+import { normalizeOutputFormat } from './output-format.js';
 
 export interface RenderOptions {
   fmt?: string;
@@ -27,7 +28,7 @@ function resolveColumns(rows: Record<string, unknown>[], opts: RenderOptions): s
 }
 
 export function render(data: unknown, opts: RenderOptions = {}): void {
-  let fmt = opts.fmt ?? 'table';
+  let fmt = normalizeOutputFormat(opts.fmt ?? 'table');
   // Non-TTY auto-downgrade only when format was NOT explicitly passed by user.
   if (!opts.fmtExplicit) {
     if (fmt === 'table' && !process.stdout.isTTY) fmt = 'yaml';
@@ -38,7 +39,7 @@ export function render(data: unknown, opts: RenderOptions = {}): void {
   }
   switch (fmt) {
     case 'json': renderJson(data); break;
-    case 'plain': renderPlain(data, opts); break;
+    case 'plain': renderPlain(data); break;
     case 'md': case 'markdown': renderMarkdown(data, opts); break;
     case 'csv': renderCsv(data, opts); break;
     case 'yaml': case 'yml': renderYaml(data); break;
@@ -80,7 +81,7 @@ function renderTable(data: unknown, opts: RenderOptions): void {
 function renderJson(data: unknown): void {
   console.log(JSON.stringify(data, null, 2));
 }
-function renderPlain(data: unknown, opts: RenderOptions): void {
+function renderPlain(data: unknown): void {
   const rows = normalizeRows(data);
   if (!rows.length) return;
 
@@ -124,7 +125,10 @@ function renderMarkdown(data: unknown, opts: RenderOptions): void {
   console.log('| ' + columns.join(' | ') + ' |');
   console.log('| ' + columns.map(() => '---').join(' | ') + ' |');
   for (const row of rows) {
-    console.log('| ' + columns.map(c => String((row as Record<string, unknown>)[c] ?? '').replace(/\|/g, '\\|')).join(' | ') + ' |');
+    console.log('| ' + columns.map(c => String((row as Record<string, unknown>)[c] ?? '')
+      .replace(/\|/g, '\\|')
+      // Any embedded line break would split the physical table row.
+      .replace(/\r\n?|\n/g, '<br>')).join(' | ') + ' |');
   }
 }
 

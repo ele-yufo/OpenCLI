@@ -17,7 +17,7 @@
  *  75   Temporary failure, retry later  (TimeoutError)   EX_TEMPFAIL
  *  77   Permission denied / auth needed (AuthRequiredError)
  *  78   Configuration error             (ConfigError)
- * 130   Interrupted by Ctrl-C           (set by tui.ts SIGINT handler)
+ * 130   Interrupted by Ctrl-C
  */
 import type { ObservationTraceReceipt } from './observation/events.js';
 
@@ -103,11 +103,11 @@ export class ConfigError extends CliError {
 
 export class AuthRequiredError extends CliError {
   readonly domain: string;
-  constructor(domain: string, message?: string) {
+  constructor(domain: string, message?: string, hint?: string) {
     super(
       'AUTH_REQUIRED',
       message ?? `Not logged in to ${domain}`,
-      `Please open Chrome or Chromium and log in to https://${domain}`,
+      hint ?? `Please open Chrome or Chromium and log in to https://${domain}`,
       EXIT_CODES.NOPERM,
     );
     this.domain = domain;
@@ -119,7 +119,7 @@ export class TimeoutError extends CliError {
     super(
       'TIMEOUT',
       `${label} timed out after ${seconds}s`,
-      hint ?? 'Try again, or increase timeout with --timeout <seconds> (or OPENCLI_BROWSER_COMMAND_TIMEOUT for the global default)',
+      hint ?? 'Try again, or increase the global browser command timeout with OPENCLI_BROWSER_COMMAND_TIMEOUT (seconds)',
       EXIT_CODES.TEMPFAIL,
     );
   }
@@ -257,14 +257,31 @@ export function toEnvelope(err: unknown): ErrorEnvelope {
     receiptPath: traceReceipt.receiptPath,
     status: traceReceipt.status,
   } : undefined;
-  if (err instanceof CliError) {
+  // Duck typing: accept own CliError instances AND cross-package copies that
+  // carry the same shape. `instanceof` fails when the throwing module resolves
+  // a different copy of @jackwener/opencli (e.g. a plugin with its own
+  // node_modules) — those errors used to degrade to UNKNOWN and lose `hint`.
+  //
+  // `exitCode` is the discriminator: CliError's constructor always assigns it
+  // (defaulting to GENERIC_ERROR), while Node system errors carry a string
+  // `code` (ENOENT, ECONNREFUSED, EACCES) and a string `message` but never an
+  // `exitCode`. Without this check those would be reported with their errno as
+  // the envelope `code`, silently widening the contract that callers switch on.
+  const isCliErrorLike =
+    err !== null &&
+    typeof err === 'object' &&
+    typeof (err as any).code === 'string' &&
+    typeof (err as any).message === 'string' &&
+    typeof (err as any).exitCode === 'number';
+  if (err instanceof CliError || isCliErrorLike) {
+    const e = err as any;
     return {
       ok: false,
       error: {
-        code: err.code,
-        message: err.message,
-        ...(err.hint ? { help: err.hint } : {}),
-        exitCode: err.exitCode,
+        code: e.code,
+        message: e.message,
+        ...(typeof e.hint === 'string' && e.hint ? { help: e.hint } : {}),
+        exitCode: e.exitCode ?? EXIT_CODES.GENERIC_ERROR,
         ...(cause ? { cause } : {}),
       },
       ...(trace ? { trace } : {}),

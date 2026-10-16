@@ -3,6 +3,7 @@ import { CommandExecutionError, EmptyResultError } from '@jackwener/opencli/erro
 import {
   assertLinkedInAuthenticated,
   assertSafeLinkedinUrl,
+  decodeLinkedInSafetyUrl,
   normalizeHttpUrl,
   normalizeWhitespace,
   unwrapEvaluateResult,
@@ -55,18 +56,6 @@ function parseProjectText(rawText, profileUrl, index) {
   };
 }
 
-function decodeLinkedInSafetyUrl(value) {
-  const url = normalizeWhitespace(value);
-  if (!url) return '';
-  try {
-    const parsed = new URL(url);
-    if (parsed.hostname.endsWith('linkedin.com') && parsed.pathname === '/safety/go/') {
-      return normalizeHttpUrl(parsed.searchParams.get('url') || '');
-    }
-  } catch {}
-  return normalizeHttpUrl(url);
-}
-
 function parseProjectsSectionText(rawText, profileUrl) {
   const isDateLine = (line) => /\b(?:jan|feb|mar|apr|may|jun|jul|aug|sep|oct|nov|dec)\s+\d{4}\s*[–-]\s*(?:present|[a-z]{3,9}\s+\d{4})\b/i.test(line);
   const stopLine = (line) => /^(who your viewers also viewed|people you may know|about|accessibility|talent solutions|community guidelines|careers|marketing solutions|privacy & terms)$/i.test(line);
@@ -104,10 +93,12 @@ function buildProjectsExtractionScript() {
       if (!value) return '';
       try {
         const parsed = new URL(value, location.origin);
-        if (parsed.hostname.endsWith('linkedin.com') && parsed.pathname === '/safety/go/') {
+        if (parsed.username || parsed.password) return '';
+        if ((parsed.hostname === 'linkedin.com' || parsed.hostname.endsWith('.linkedin.com')) && parsed.pathname === '/safety/go/') {
           const decoded = parsed.searchParams.get('url') || '';
           try {
             const target = new URL(decoded, location.origin);
+            if (target.username || target.password) return '';
             if (target.protocol === 'http:' || target.protocol === 'https:') return target.toString();
             return '';
           } catch {
@@ -302,10 +293,10 @@ cli({
 });
 
 export const __test__ = {
+  buildProjectsExtractionScript,
   normalizeProfileUrl,
   profileProjectsUrl,
   parseProjectText,
   parseProjectsSectionText,
-  decodeLinkedInSafetyUrl,
   normalizeProject,
 };

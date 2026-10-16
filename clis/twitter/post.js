@@ -1,7 +1,7 @@
 import * as fs from 'node:fs';
 import * as path from 'node:path';
 import { cli, Strategy } from '@jackwener/opencli/registry';
-import { CommandExecutionError } from '@jackwener/opencli/errors';
+import { CommandExecutionError, TimeoutError } from '@jackwener/opencli/errors';
 import { unwrapBrowserResult } from './shared.js';
 import { isRecoverableFileInputError } from './utils.js';
 
@@ -273,16 +273,18 @@ async function submitTweet(page, text) {
             await new Promise(r => setTimeout(r, ${JSON.stringify(SUBMIT_POLL_MS)}));
             const toasts = Array.from(document.querySelectorAll('[role="alert"], [data-testid="toast"]'))
                 .filter((el) => visible(el) && !el.hasAttribute('data-opencli-before-submit-toast'));
-            const successToast = toasts.find((el) => /sent|posted|your post was sent|your tweet was sent/i.test(el.textContent || ''));
-            if (successToast) return { ok: true, message: 'Tweet posted successfully.', ...statusUrl(successToast) };
-            const alert = toasts.find((el) => /failed|error|try again|not sent|could not/i.test(el.textContent || ''));
+            // A failure such as "Your post was not sent" must never match success.
+            const alert = toasts.find((el) => /failed|error|try again|not sent|not posted|could not|发送失败|发布失败|无法发送|无法发布|请重试|出错/i.test(el.textContent || ''));
             if (alert) return { ok: false, message: (alert.textContent || 'Tweet failed to post.').trim() };
+            // X localizes this transient toast according to the account language.
+            const successToast = toasts.find((el) => /your post was sent|your tweet was sent|post sent|tweet sent|posted successfully|已发送|已发布|已发出|发布成功|发送成功/i.test(el.textContent || ''));
+            if (successToast) return { ok: true, message: 'Tweet posted successfully.', ...statusUrl(successToast) };
 
             // Composer disappearance or text clearing alone is not a reliable
             // postcondition: X may close/rewrite the modal after failed submits.
             // Require a fresh success toast so the evidence is tied to this click.
         }
-        return { ok: false, message: 'Tweet submission did not complete before timeout.' };
+        return { ok: false, unconfirmed: true, message: 'Tweet submission did not complete before timeout.' };
     })()`), 'Twitter post completion');
     validateSubmitStatusPair(result);
     return result;
@@ -332,7 +334,7 @@ cli({
             }
             const uploadState = await waitForImageUpload(page, absPaths.length);
             if (!uploadState?.ok) {
-                return [{ status: 'failed', message: uploadState?.message ?? `Image upload timed out (${UPLOAD_TIMEOUT_MS / 1000}s).`, text }];
+                throw new TimeoutError('twitter image upload', UPLOAD_TIMEOUT_MS / 1000, 'Nothing was posted. Retry, or attach a smaller image.');
             }
         }
 
@@ -340,17 +342,26 @@ cli({
         // the final Draft.js composer state immediately before clicking Post.
         const typeResult = await insertComposerText(page, text);
         if (!typeResult?.ok) {
-            return [{ status: 'failed', message: typeResult?.message ?? 'Could not type tweet text.', text }];
+            throw new CommandExecutionError(typeResult?.message ?? 'Could not type tweet text.', 'Open the composer in the browser and check whether X is asking you to log in.');
         }
 
         await page.wait(1);
         const result = await submitTweet(page, text);
+        if (result?.unconfirmed) {
+            // The poll expiring does not mean the tweet stayed in the composer,
+            // so this must not read as a definite failure: the agent workflow
+            // retries CommandExecutionError and would post twice (#2255).
+            throw new TimeoutError('twitter post', SUBMIT_TIMEOUT_MS / 1000, `${result.message} Check \`opencli twitter tweets --limit 1\` before retrying; the post may already be live.`);
+        }
+        if (!result?.ok) {
+            throw new CommandExecutionError(result?.message ?? 'Tweet failed to post.', 'Nothing was posted. Open the composer in the browser and retry.');
+        }
         return [{
-            status: result?.ok ? 'success' : 'failed',
-            message: result?.message ?? 'Tweet failed to post.',
+            status: 'success',
+            message: result.message,
             text,
-            ...(result?.id ? { id: result.id } : {}),
-            ...(result?.url ? { url: result.url } : {}),
+            ...(result.id ? { id: result.id } : {}),
+            ...(result.url ? { url: result.url } : {}),
         }];
     }
 });

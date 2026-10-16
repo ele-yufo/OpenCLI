@@ -130,7 +130,7 @@ function effectiveCommandTimeoutSeconds(params: Omit<DaemonCommand, 'id' | 'acti
  * journal.ts). From this version on, re-sending the SAME command id is safe:
  * the executor replays the recorded result instead of re-executing.
  */
-const MIN_JOURNAL_EXTENSION_VERSION = '1.0.22';
+export const MIN_JOURNAL_EXTENSION_VERSION = '1.0.22';
 
 function versionAtLeast(version: string | null | undefined, min: string): boolean {
   if (!version) return false;
@@ -142,6 +142,11 @@ function versionAtLeast(version: string | null | undefined, min: string): boolea
     if (d !== 0) return d > 0;
   }
   return true;
+}
+
+export function supportsCommandJournal(version: string | null | undefined, compatRange: string | null | undefined): boolean {
+  // compatRange marks the independently versioned extension line.
+  return !!compatRange && versionAtLeast(version, MIN_JOURNAL_EXTENSION_VERSION);
 }
 
 /** Error codes meaning the executor's outcome is genuinely unknown — never auto-retry. */
@@ -350,15 +355,17 @@ async function sendCommandRaw(
     // Bound the connect wait by the command's remaining budget so repeated
     // daemon failures cannot stretch the total wall time far past --timeout.
     const remainingSeconds = Math.ceil((deadlineAt - Date.now()) / 1000);
-    const ready = await ensureBrowserBridgeReady({
+    const health = await ensureBrowserBridgeReady({
       timeoutSeconds: Math.max(1, Math.min(DEFAULT_BROWSER_CONNECT_TIMEOUT, remainingSeconds)),
-      // Only an explicit requirement pins readiness to a specific profile —
-      // waiting for a stale preferred profile to come back would hang the
-      // ensure path even though the daemon can already serve the command.
+      // Only an explicit requirement pins readiness to a specific profile; a
+      // preferred one is arbitrated against live connections on every poll,
+      // so a stale default still cannot hang the ensure path while a valid
+      // one avoids the multi-profile ambiguity error (#2259).
       contextId,
+      preferredContextId,
       verbose: false,
     });
-    executorJournaled = versionAtLeast(ready.health.status?.extensionVersion, MIN_JOURNAL_EXTENSION_VERSION);
+    executorJournaled = supportsCommandJournal(health.status?.extensionVersion, health.status?.extensionCompatRange);
   };
 
   for (let attempt = 1; attempt <= TRANSPORT_MAX_ATTEMPTS; attempt++) {

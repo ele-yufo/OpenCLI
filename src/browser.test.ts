@@ -1,6 +1,5 @@
 import { afterEach, describe, it, expect, vi } from 'vitest';
 import { BrowserBridge, generateStealthJs } from './browser/index.js';
-import { extractTabEntries, diffTabIndexes, appendLimited } from './browser/tabs.js';
 import { withTimeoutMs } from './runtime.js';
 import { __test__ as cdpTest } from './browser/cdp.js';
 import { classifyBrowserError } from './browser/errors.js';
@@ -9,47 +8,10 @@ import * as daemonLifecycle from './browser/daemon-lifecycle.js';
 
 afterEach(() => {
   vi.restoreAllMocks();
+  vi.unstubAllEnvs();
 });
 
 describe('browser helpers', () => {
-  it('extracts tab entries from string snapshots', () => {
-    const entries = extractTabEntries('Tab 0 https://example.com\nTab 1 Chrome Extension');
-
-    expect(entries).toEqual([
-      { index: 0, identity: 'https://example.com' },
-      { index: 1, identity: 'Chrome Extension' },
-    ]);
-  });
-
-  it('extracts tab entries from MCP markdown format', () => {
-    const entries = extractTabEntries(
-      '- 0: (current) [Playwright MCP extension](chrome-extension://abc/connect.html)\n- 1: [知乎 - 首页](https://www.zhihu.com/)'
-    );
-
-    expect(entries).toEqual([
-      { index: 0, identity: '(current) [Playwright MCP extension](chrome-extension://abc/connect.html)' },
-      { index: 1, identity: '[知乎 - 首页](https://www.zhihu.com/)' },
-    ]);
-  });
-
-  it('closes only tabs that were opened during the session', () => {
-    const tabsToClose = diffTabIndexes(
-      ['https://example.com', 'Chrome Extension'],
-      [
-        { index: 0, identity: 'https://example.com' },
-        { index: 1, identity: 'Chrome Extension' },
-        { index: 2, identity: 'https://target.example/page' },
-        { index: 3, identity: 'chrome-extension://bridge' },
-      ],
-    );
-
-    expect(tabsToClose).toEqual([3, 2]);
-  });
-
-  it('keeps only the tail of stderr buffers', () => {
-    expect(appendLimited('12345', '67890', 8)).toBe('34567890');
-  });
-
   it('times out slow promises', async () => {
     await expect(withTimeoutMs(new Promise(() => {}), 10, 'timeout')).rejects.toThrow('timeout');
   });
@@ -70,7 +32,7 @@ describe('browser helpers', () => {
     expect(classifyBrowserError(new Error('Permission denied')).kind).toBe('non-retryable');
   });
 
-  it('prefers the real Electron app target over DevTools and blank pages', () => {
+  it('prefers the browser page target over DevTools and blank pages', () => {
     const target = cdpTest.selectCDPTarget([
       {
         type: 'page',
@@ -85,8 +47,8 @@ describe('browser helpers', () => {
         webSocketDebuggerUrl: 'ws://127.0.0.1:9224/blank',
       },
       {
-        type: 'app',
-        title: 'Antigravity',
+        type: 'page',
+        title: 'Example',
         url: 'http://localhost:3000/',
         webSocketDebuggerUrl: 'ws://127.0.0.1:9224/app',
       },
@@ -96,25 +58,46 @@ describe('browser helpers', () => {
   });
 
   it('honors OPENCLI_CDP_TARGET when multiple inspectable targets exist', () => {
-    vi.stubEnv('OPENCLI_CDP_TARGET', 'codex');
+    vi.stubEnv('OPENCLI_CDP_TARGET', 'docs');
 
     const target = cdpTest.selectCDPTarget([
       {
-        type: 'app',
-        title: 'Cursor',
-        url: 'http://localhost:3000/cursor',
-        webSocketDebuggerUrl: 'ws://127.0.0.1:9226/cursor',
+        type: 'page',
+        title: 'Example',
+        url: 'http://localhost:3000/example',
+        webSocketDebuggerUrl: 'ws://127.0.0.1:9226/example',
       },
       {
-        type: 'app',
-        title: 'OpenAI Codex',
-        url: 'http://localhost:3000/codex',
-        webSocketDebuggerUrl: 'ws://127.0.0.1:9226/codex',
+        type: 'page',
+        title: 'Documentation',
+        url: 'http://localhost:3000/docs',
+        webSocketDebuggerUrl: 'ws://127.0.0.1:9226/docs',
       },
     ]);
 
-    expect(target?.webSocketDebuggerUrl).toBe('ws://127.0.0.1:9226/codex');
+    expect(target?.webSocketDebuggerUrl).toBe('ws://127.0.0.1:9226/docs');
   });
+
+  it('leaves http tabs in document order when one carries a query string', () => {
+    const target = cdpTest.selectCDPTarget([
+      {
+        type: 'page',
+        title: 'Example',
+        url: 'https://example.com/app?q=1',
+        webSocketDebuggerUrl: 'ws://127.0.0.1:9222/query',
+      },
+      {
+        type: 'page',
+        title: 'Example',
+        url: 'https://example.com/app',
+        webSocketDebuggerUrl: 'ws://127.0.0.1:9222/plain',
+      },
+    ]);
+
+    expect(target?.webSocketDebuggerUrl).toBe('ws://127.0.0.1:9222/query');
+  });
+
+
 });
 
 describe('BrowserBridge state', () => {
@@ -168,6 +151,31 @@ describe('BrowserBridge state', () => {
     const bridge = new BrowserBridge();
 
     await expect(bridge.connect({ timeout: 0.1 })).rejects.toThrow('Browser Bridge extension not connected');
+  });
+
+  it('threads preferredContextId into every readiness health read', async () => {
+    const { PKG_VERSION } = await import('./version.js');
+    const spy = vi.spyOn(daemonTransport, 'getDaemonHealth').mockResolvedValue({
+      state: 'no-extension',
+      status: {
+        ok: true,
+        pid: 999999,
+        uptime: 0,
+        daemonVersion: PKG_VERSION,
+        extensionConnected: false,
+        pending: 0,
+        memoryMB: 0,
+        port: 0,
+      },
+    });
+
+    const bridge = new BrowserBridge();
+
+    await expect(bridge.connect({ timeout: 0.1, preferredContextId: 'zvypsyje' })).rejects.toThrow('Browser Bridge extension not connected');
+    expect(spy.mock.calls.length).toBeGreaterThan(1);
+    for (const call of spy.mock.calls) {
+      expect(call[0]).toMatchObject({ preferredContextId: 'zvypsyje' });
+    }
   });
 
   it('attempts stale daemon replacement when daemonVersion is missing', async () => {

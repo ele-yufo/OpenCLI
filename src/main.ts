@@ -3,9 +3,8 @@
  * opencli — Make any website your CLI. AI-powered.
  */
 
-// Ensure standard system paths are available for child processes.
-// Some environments (GUI apps, cron, IDE terminals) launch with a minimal PATH
-// that excludes /usr/local/bin, /usr/sbin, etc., causing external CLIs to fail.
+// GUI apps and cron can start with a minimal PATH. Keep standard system paths
+// available for media helpers such as yt-dlp and ffmpeg.
 if (process.platform !== 'win32') {
   const std = ['/usr/local/bin', '/usr/bin', '/bin', '/usr/sbin', '/sbin'];
   const cur = new Set((process.env.PATH ?? '').split(':').filter(Boolean));
@@ -25,7 +24,6 @@ import { isSupportedNodeVersion, MIN_SUPPORTED_NODE_MAJOR } from './runtime-dete
 import { isIgnorableDaemonPortEnv, unsupportedDaemonPortEnvMessage } from './constants.js';
 
 const __filename = fileURLToPath(import.meta.url);
-const __dirname = path.dirname(__filename);
 // Adapters are JS-first and live at <package-root>/clis/.
 // Use findPackageRoot so the path works both in dev (src/main.ts) and prod (dist/src/main.js).
 const BUILTIN_CLIS = path.join(findPackageRoot(__filename), 'clis');
@@ -53,7 +51,7 @@ if (!isIgnorableDaemonPortEnv(process.env.OPENCLI_DAEMON_PORT)) {
 }
 
 // Fast path: --version (only when it's the top-level intent, not passed to a subcommand)
-// e.g. `opencli --version` or `opencli -V`, but NOT `opencli gh --version`
+// e.g. `opencli --version` or `opencli -V`, but NOT `opencli browser --version`
 if (argv[0] === '--version' || argv[0] === '-V') {
   process.stdout.write(PKG_VERSION + '\n');
   process.exit(EXIT_CODES.SUCCESS);
@@ -89,10 +87,12 @@ if (getCompIdx !== -1) {
     }
     if (cursor === undefined) cursor = words.length;
     const candidates = getCompletionsFromManifest(words, cursor, manifestPaths);
-    process.stdout.write(candidates.join('\n') + '\n');
-    process.exit(EXIT_CODES.SUCCESS);
+    if (candidates !== null) {
+      process.stdout.write(candidates.join('\n') + '\n');
+      process.exit(EXIT_CODES.SUCCESS);
+    }
   }
-  // No manifest — fall through to full discovery path below
+  // Manifest unavailable or invalid — fall through to full discovery below.
 }
 
 // ── Full startup path ───────────────────────────────────────────────────

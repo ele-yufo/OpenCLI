@@ -3,6 +3,7 @@ import { CommandExecutionError, EmptyResultError } from '@jackwener/opencli/erro
 import {
   assertLinkedInAuthenticated,
   assertSafeLinkedinUrl,
+  decodeLinkedInSafetyUrl,
   normalizeHttpUrl,
   normalizeWhitespace,
   unwrapEvaluateResult,
@@ -27,18 +28,6 @@ function profileExperienceUrl(profileUrl) {
     throw new CommandExecutionError('LinkedIn profile-experience requires a resolved /in/<handle>/ profile URL');
   }
   return new URL(`${parsed.pathname.replace(/\/?$/, '/') }details/experience/`, 'https://www.linkedin.com').toString();
-}
-
-function decodeLinkedInSafetyUrl(value) {
-  const url = normalizeWhitespace(value);
-  if (!url) return '';
-  try {
-    const parsed = new URL(url);
-    if (parsed.hostname.endsWith('linkedin.com') && parsed.pathname === '/safety/go/') {
-      return normalizeHttpUrl(parsed.searchParams.get('url') || '');
-    }
-  } catch {}
-  return normalizeHttpUrl(url);
 }
 
 function isChromeLine(line) {
@@ -161,10 +150,12 @@ function buildExperienceExtractionScript() {
       if (!value) return '';
       try {
         const parsed = new URL(value, location.origin);
-        if (parsed.hostname.endsWith('linkedin.com') && parsed.pathname === '/safety/go/') {
+        if (parsed.username || parsed.password) return '';
+        if ((parsed.hostname === 'linkedin.com' || parsed.hostname.endsWith('.linkedin.com')) && parsed.pathname === '/safety/go/') {
           const decoded = parsed.searchParams.get('url') || '';
           try {
             const target = new URL(decoded, location.origin);
+            if (target.username || target.password) return '';
             if (target.protocol === 'http:' || target.protocol === 'https:') return target.toString();
             return '';
           } catch {
@@ -405,10 +396,12 @@ function buildDialogExtractionScript() {
       if (!value) return '';
       try {
         const parsed = new URL(value, location.origin);
-        if (parsed.hostname.endsWith('linkedin.com') && parsed.pathname === '/safety/go/') {
+        if (parsed.username || parsed.password) return '';
+        if ((parsed.hostname === 'linkedin.com' || parsed.hostname.endsWith('.linkedin.com')) && parsed.pathname === '/safety/go/') {
           const decoded = parsed.searchParams.get('url') || '';
           try {
             const target = new URL(decoded, location.origin);
+            if (target.username || target.password) return '';
             if (target.protocol === 'http:' || target.protocol === 'https:') return target.toString();
             return '';
           } catch {
@@ -659,7 +652,6 @@ cli({
 export const __test__ = {
   normalizeProfileUrl,
   profileExperienceUrl,
-  decodeLinkedInSafetyUrl,
   parseDateRangeParts,
   parseCompanyLine,
   parseLocationLine,

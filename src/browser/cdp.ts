@@ -1,5 +1,5 @@
 /**
- * CDP client — implements IPage by connecting directly to a Chrome/Electron CDP WebSocket.
+ * CDP client — implements IPage by connecting directly to a Chrome CDP WebSocket.
  *
  * Fixes applied:
  * - send() now has a 30s timeout guard (P0 #4)
@@ -11,14 +11,15 @@
 import { WebSocket, type RawData } from 'ws';
 import { request as httpRequest } from 'node:http';
 import { request as httpsRequest } from 'node:https';
+import { readFileSync, statSync } from 'node:fs';
 import type { BrowserCookie, BrowserEvaluateFunction, IPage, ScreenshotOptions } from '../types.js';
 import type { IBrowserFactory } from '../runtime.js';
 import { buildEvaluateExpression } from './utils.js';
 import { generateStealthJs } from './stealth.js';
 import { waitForDomStableJs } from './dom-helpers.js';
 import { isRecord, saveBase64ToFile } from '../utils.js';
-import { getAllElectronApps } from '../electron-apps.js';
-import { BasePage } from './base-page.js';
+import { CommandExecutionError } from '../errors.js';
+import { CDPBasePage } from './base-page.js';
 
 export interface CDPTarget {
   type?: string;
@@ -46,6 +47,7 @@ const CDP_SEND_TIMEOUT = 30_000;
 // surface `responseBodyFullSize` + `responseBodyTruncated` so downstream layers
 // can tell the agent what happened instead of lying about the payload.
 export const CDP_RESPONSE_BODY_CAPTURE_LIMIT = 8 * 1024 * 1024;
+export const CDP_REQUEST_BODY_CAPTURE_LIMIT = 1 * 1024 * 1024;
 
 export class CDPBridge implements IBrowserFactory {
   private _ws: WebSocket | null = null;
@@ -58,6 +60,13 @@ export class CDPBridge implements IBrowserFactory {
 
     const endpoint = opts?.cdpEndpoint ?? process.env.OPENCLI_CDP_ENDPOINT;
     if (!endpoint) throw new Error('CDP endpoint not provided (pass cdpEndpoint or set OPENCLI_CDP_ENDPOINT)');
+
+    // Validate before connecting: reading a FIFO synchronously could block forever.
+    const initPath = process.env.OPENCLI_CDP_INIT_SCRIPT;
+    if (initPath && !statSync(initPath).isFile()) {
+      throw new Error('OPENCLI_CDP_INIT_SCRIPT must point to a regular JavaScript file');
+    }
+    const initSource = initPath ? readFileSync(initPath, 'utf8') : undefined;
 
     let wsUrl = endpoint;
     if (endpoint.startsWith('http')) {
@@ -84,6 +93,8 @@ export class CDPBridge implements IBrowserFactory {
         try {
           await this.send('Page.enable');
           await this.send('Page.addScriptToEvaluateOnNewDocument', { source: generateStealthJs() });
+          // Optional caller script for every new document, e.g. state a headless peer cannot share across connections.
+          if (initSource !== undefined) await this.send('Page.addScriptToEvaluateOnNewDocument', { source: initSource });
         } catch (err) {
           ws.close();
           reject(err instanceof Error ? err : new Error(String(err)));
@@ -183,7 +194,7 @@ export class CDPBridge implements IBrowserFactory {
   }
 }
 
-class CDPPage extends BasePage {
+class CDPPage extends CDPBasePage {
   private _pageEnabled = false;
 
   // Network capture state (mirrors extension/src/cdp.ts NetworkCaptureEntry shape)
@@ -191,6 +202,11 @@ class CDPPage extends BasePage {
   private _networkCapturePattern = '';
   private _networkEntries: Array<{
     url: string; method: string; responseStatus?: number;
+    requestHeaders?: Record<string, string>;
+    requestBodyKind?: string;
+    requestBodyPreview?: string;
+    requestBodyFullSize?: number;
+    requestBodyTruncated?: boolean;
     responseContentType?: string;
     responsePreview?: string;
     responseBodyFullSize?: number;
@@ -237,8 +253,15 @@ class CDPPage extends BasePage {
   }
 
   async getCookies(opts: { domain?: string; url?: string } = {}): Promise<BrowserCookie[]> {
-    const result = await this.bridge.send('Network.getCookies', opts.url ? { urls: [opts.url] } : {});
-    const cookies = isRecord(result) && Array.isArray(result.cookies) ? result.cookies : [];
+    // Network.getCookies without URLs is scoped to the current page, which may
+    // be on another site during a no-navigation auth check.
+    const result = opts.url
+      ? await this.bridge.send('Network.getCookies', { urls: [opts.url] })
+      : await this.bridge.send('Storage.getCookies', {});
+    if (!isRecord(result) || !Array.isArray(result.cookies) || !result.cookies.every(isCookie)) {
+      throw new CommandExecutionError('CDP returned an invalid cookies response');
+    }
+    const cookies = result.cookies;
     const domain = opts.domain;
     return domain
       ? cookies.filter((cookie): cookie is BrowserCookie => isCookie(cookie) && matchesCookieDomain(cookie.domain, domain))
@@ -313,14 +336,51 @@ class CDPPage extends BasePage {
 
       // Step 1: Record request method/url on requestWillBeSent
       this.bridge.on('Network.requestWillBeSent', (params: unknown) => {
-        const p = params as { requestId: string; request: { method: string; url: string }; timestamp: number };
+        const p = params as {
+          requestId: string;
+          request: {
+            method: string;
+            url: string;
+            headers?: Record<string, unknown>;
+            postData?: string;
+            hasPostData?: boolean;
+          };
+          timestamp: number;
+        };
         if (!this._networkCapturePattern || p.request.url.includes(this._networkCapturePattern)) {
+          const rawBody = typeof p.request.postData === 'string' ? p.request.postData : '';
+          const bodyTruncated = rawBody.length > CDP_REQUEST_BODY_CAPTURE_LIMIT;
           const idx = this._networkEntries.push({
             url: p.request.url,
             method: p.request.method,
+            requestHeaders: Object.fromEntries(
+              Object.entries(p.request.headers ?? {}).map(([name, value]) => [name, String(value)]),
+            ),
+            requestBodyKind: p.request.hasPostData ? 'string' : 'empty',
+            requestBodyPreview: bodyTruncated ? rawBody.slice(0, CDP_REQUEST_BODY_CAPTURE_LIMIT) : rawBody,
+            requestBodyFullSize: rawBody.length,
+            requestBodyTruncated: bodyTruncated,
             timestamp: Date.now(),
           }) - 1;
           this._pendingRequests.set(p.requestId, idx);
+
+          if (p.request.hasPostData && p.request.postData === undefined) {
+            const requestBodyFetch = this.bridge.send('Network.getRequestPostData', { requestId: p.requestId }).then((result: unknown) => {
+              const postData = (result as { postData?: string } | undefined)?.postData;
+              if (typeof postData !== 'string') return;
+              const truncated = postData.length > CDP_REQUEST_BODY_CAPTURE_LIMIT;
+              this._networkEntries[idx].requestBodyPreview = truncated
+                ? postData.slice(0, CDP_REQUEST_BODY_CAPTURE_LIMIT)
+                : postData;
+              this._networkEntries[idx].requestBodyFullSize = postData.length;
+              this._networkEntries[idx].requestBodyTruncated = truncated;
+            }).catch(() => {
+              // Some request types do not expose post data.
+            }).finally(() => {
+              this._pendingBodyFetches.delete(requestBodyFetch);
+            });
+            this._pendingBodyFetches.add(requestBodyFetch);
+          }
         }
       });
 
@@ -414,61 +474,8 @@ class CDPPage extends BasePage {
     return this.bridge.send(method, params);
   }
 
-  async handleJavaScriptDialog(accept: boolean, promptText?: string): Promise<void> {
-    await this.cdp('Page.handleJavaScriptDialog', {
-      accept,
-      ...(promptText !== undefined && { promptText }),
-    });
-  }
-
-  async nativeClick(x: number, y: number): Promise<void> {
-    await this.cdp('Input.dispatchMouseEvent', {
-      type: 'mouseMoved',
-      x,
-      y,
-    });
-    await this.cdp('Input.dispatchMouseEvent', {
-      type: 'mousePressed',
-      x,
-      y,
-      button: 'left',
-      clickCount: 1,
-    });
-    await this.cdp('Input.dispatchMouseEvent', {
-      type: 'mouseReleased',
-      x,
-      y,
-      button: 'left',
-      clickCount: 1,
-    });
-  }
-
-  async nativeType(text: string): Promise<void> {
-    await this.cdp('Input.insertText', { text });
-  }
-
   async insertText(text: string): Promise<void> {
     await this.nativeType(text);
-  }
-
-  async nativeKeyPress(key: string, modifiers: string[] = []): Promise<void> {
-    let modifierFlags = 0;
-    for (const mod of modifiers) {
-      if (mod === 'Alt') modifierFlags |= 1;
-      if (mod === 'Ctrl' || mod === 'Control') modifierFlags |= 2;
-      if (mod === 'Meta') modifierFlags |= 4;
-      if (mod === 'Shift') modifierFlags |= 8;
-    }
-    await this.cdp('Input.dispatchKeyEvent', {
-      type: 'keyDown',
-      key,
-      modifiers: modifierFlags,
-    });
-    await this.cdp('Input.dispatchKeyEvent', {
-      type: 'keyUp',
-      key,
-      modifiers: modifierFlags,
-    });
   }
 }
 
@@ -483,21 +490,15 @@ function matchesCookieDomain(cookieDomain: string, targetDomain: string): boolea
   const normalizedCookieDomain = cookieDomain.replace(/^\./, '').toLowerCase();
   const normalizedTargetDomain = targetDomain.replace(/^\./, '').toLowerCase();
   return normalizedTargetDomain === normalizedCookieDomain
-    || normalizedTargetDomain.endsWith(`.${normalizedCookieDomain}`);
+    || normalizedCookieDomain.endsWith(`.${normalizedTargetDomain}`);
 }
 
 function selectCDPTarget(targets: CDPTarget[]): CDPTarget | undefined {
   const preferredPattern = compilePreferredPattern(process.env.OPENCLI_CDP_TARGET);
-
-  const ranked = targets
+  return targets
     .map((target, index) => ({ target, index, score: scoreCDPTarget(target, preferredPattern) }))
     .filter(({ score }) => Number.isFinite(score))
-    .sort((a, b) => {
-      if (b.score !== a.score) return b.score - a.score;
-      return a.index - b.index;
-    });
-
-  return ranked[0]?.target;
+    .sort((a, b) => b.score - a.score || a.index - b.index)[0]?.target;
 }
 
 function scoreCDPTarget(target: CDPTarget, preferredPattern?: RegExp): number {
@@ -516,27 +517,13 @@ function scoreCDPTarget(target: CDPTarget, preferredPattern?: RegExp): number {
 
   if (preferredPattern && preferredPattern.test(haystack)) score += 1000;
 
-  if (type === 'app') score += 120;
-  else if (type === 'webview') score += 100;
-  else if (type === 'page') score += 80;
+  if (type === 'page') score += 80;
   else if (type === 'iframe') score += 20;
 
-  if (url.startsWith('http://localhost') || url.startsWith('https://localhost')) score += 90;
-  if (url.startsWith('file://')) score += 60;
-  if (url.startsWith('http://127.0.0.1') || url.startsWith('https://127.0.0.1')) score += 50;
   if (url.startsWith('about:blank')) score -= 120;
   if (url === '' || url === 'about:blank') score -= 40;
 
   if (title && title !== 'devtools') score += 25;
-
-  // Boost score for known Electron app names from the registry (builtin + user-defined)
-  const appNames = Object.values(getAllElectronApps()).map(a => (a.displayName ?? a.processName).toLowerCase());
-  for (const name of appNames) {
-    if (title.includes(name)) { score += 120; break; }
-  }
-  for (const name of appNames) {
-    if (url.includes(name)) { score += 100; break; }
-  }
 
   return score;
 }

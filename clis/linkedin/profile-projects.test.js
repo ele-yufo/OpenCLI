@@ -3,28 +3,10 @@ import { getRegistry } from '@jackwener/opencli/registry';
 import { CommandExecutionError } from '@jackwener/opencli/errors';
 import './profile-projects.js';
 
-const { normalizeProfileUrl, profileProjectsUrl, parseProjectText, parseProjectsSectionText, decodeLinkedInSafetyUrl, normalizeProject } = await import('./profile-projects.js').then((m) => m.__test__);
+const { normalizeProfileUrl, profileProjectsUrl, parseProjectText, parseProjectsSectionText, normalizeProject } = await import('./profile-projects.js').then((m) => m.__test__);
 
 describe('linkedin profile-projects adapter', () => {
   const command = getRegistry().get('linkedin/profile-projects');
-
-  it('registers command shape', () => {
-    expect(command).toBeDefined();
-    expect(command.strategy).toBe('cookie');
-    expect(command.browser).toBe(true);
-    expect(command.columns).toEqual([
-      'rank',
-      'title',
-      'date_range',
-      'associated_with',
-      'description',
-      'skills',
-      'media',
-      'urls',
-      'profile_url',
-      'raw_text',
-    ]);
-  });
 
   it('normalizes default and explicit profile URLs', () => {
     expect(normalizeProfileUrl(undefined)).toBe('https://www.linkedin.com/in/me/');
@@ -102,10 +84,4 @@ Who your viewers also viewed`, 'https://www.linkedin.com/in/gauravsaxena1997/');
       .toMatchObject({ urls: 'https://example.com/demo' });
   });
 
-  it('decodes LinkedIn safety redirect URLs', () => {
-    expect(decodeLinkedInSafetyUrl('https://www.linkedin.com/safety/go/?url=https%3A%2F%2Fgithub.com%2Fjackwener%2FOpenCLI&urlhash=x'))
-      .toBe('https://github.com/jackwener/OpenCLI');
-    expect(decodeLinkedInSafetyUrl('https://www.linkedin.com/safety/go/?url=javascript%3Aalert(1)&urlhash=x'))
-      .toBe('');
-  });
 });

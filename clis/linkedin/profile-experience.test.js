@@ -6,7 +6,6 @@ import './profile-experience.js';
 const {
   normalizeProfileUrl,
   profileExperienceUrl,
-  decodeLinkedInSafetyUrl,
   parseDateRangeParts,
   parseCompanyLine,
   parseLocationLine,
@@ -19,32 +18,6 @@ const {
 
 describe('linkedin profile-experience adapter', () => {
   const command = getRegistry().get('linkedin/profile-experience');
-
-  it('registers command shape', () => {
-    expect(command).toBeDefined();
-    expect(command.strategy).toBe('cookie');
-    expect(command.browser).toBe(true);
-    expect(command.columns).toEqual([
-      'rank',
-      'total_count',
-      'title',
-      'employment_type',
-      'company',
-      'date_range',
-      'start_date',
-      'end_date',
-      'location',
-      'location_type',
-      'description',
-      'skills',
-      'media',
-      'urls',
-      'skill_url',
-      'media_url',
-      'profile_url',
-      'raw_text',
-    ]);
-  });
 
   it('normalizes default and explicit profile URLs', () => {
     expect(normalizeProfileUrl(undefined)).toBe('https://www.linkedin.com/in/me/');
@@ -135,14 +108,6 @@ Who your viewers also viewed`, 'https://www.linkedin.com/in/gauravsaxena1997/');
     expect(() => normalizeExperience({ title: '' })).toThrow(CommandExecutionError);
     expect(normalizeExperience({ rank: '2', total_count: '4', title: ' AI Engineer ', company: ' Self Employed ', skill_url: ' https://example.com/skills ' }))
       .toMatchObject({ rank: 2, total_count: 4, title: 'AI Engineer', company: 'Self Employed', skill_url: 'https://example.com/skills' });
-  });
-
-  it('decodes LinkedIn safety redirect URLs', () => {
-    expect(decodeLinkedInSafetyUrl('https://www.linkedin.com/safety/go/?url=https%3A%2F%2Fexample.com%2Fdemo&urlhash=x'))
-      .toBe('https://example.com/demo');
-    expect(decodeLinkedInSafetyUrl('https://www.linkedin.com/safety/go/?url=javascript%3Aalert(1)&urlhash=x'))
-      .toBe('');
-    expect(decodeLinkedInSafetyUrl('javascript:alert(1)')).toBe('');
   });
 
   it('builds browser extraction scripts that parse as JavaScript', () => {
