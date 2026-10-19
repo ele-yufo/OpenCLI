@@ -1237,24 +1237,32 @@ export async function verifyPromptAttachments(page, uploadedUrls) {
 // history the check is skipped (the pre-submit slot and attachment
 // verification already gated the paid click); a real shortfall is reported
 // with the job ids so the spent submission can be identified.
-export async function verifySubmittedReferences(page, userId, uploadedUrls, jobIds = []) {
+export async function verifySubmittedReferences(page, userId, uploadedUrls, jobIds = [], remoteReferenceCount = 0) {
   if (!uploadedUrls.length || !jobIds.length) return;
   let jobs;
   try {
     jobs = await fetchHistory(page, userId, Math.max(20, jobIds.length * 2));
   } catch {
+    log.warn('Midjourney reference submission could not be verified: history is unavailable for the submitted job(s).');
     return;
   }
   const wanted = new Set(jobIds.map((id) => String(id).toLowerCase()));
   const commands = (Array.isArray(jobs) ? jobs : [])
     .filter((job) => wanted.has(String(job?.id || '').toLowerCase()))
     .map((job) => String(job?.full_command || ''));
-  if (commands.length < jobIds.length) return;
-  const shortLinks = commands.join(' ').match(/https:\/\/s\.mj\.run\/\S+/g) || [];
-  if (shortLinks.length >= uploadedUrls.length) return;
+  if (commands.length < jobIds.length) {
+    log.warn('Midjourney reference submission could not be verified: the submitted job(s) are not in recent history yet.');
+    return;
+  }
+  const perJob = commands.map((command) => (command.match(/https:\/\/s\.mj\.run\/\S+/g) || []).length);
+  const total = perJob.reduce((sum, count) => sum + count, 0);
+  // Remote HTTPS references the caller embedded can themselves be s.mj.run
+  // links, so they are not evidence of the local uploads.
+  const expected = uploadedUrls.length + remoteReferenceCount;
+  if (total >= expected && perJob.every((count) => count > 0)) return;
   throw new CommandExecutionError(
-    `Midjourney submitted without the requested local reference(s)`,
-    `The submitted job(s) ${jobIds.join(', ')} carry ${shortLinks.length} reference link(s) for ${uploadedUrls.length} requested image(s). Cancel or re-edit them in the web app.`,
+    'Midjourney submitted without the requested local reference(s)',
+    `The submitted job(s) ${jobIds.join(', ')} carry ${total} reference link(s) for ${expected} requested image(s). Cancel or re-edit them in the web app.`,
   );
 }
 

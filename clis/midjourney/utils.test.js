@@ -751,11 +751,21 @@ it('submitted jobs must carry a reference short link per uploaded image', async 
   ];
   const page = { fetchJson: vi.fn(async () => ({ data: history })) };
   await verifySubmittedReferences(page, 'user-1', [THUMB_A, THUMB_B], [JOB]);
-  // Fewer short links than references is a real shortfall.
+  // Remote s.mj.run references embedded in the prompt are not local-upload evidence.
+  await verifySubmittedReferences(page, 'user-1', [THUMB_A], [JOB], 1);
+  // Fewer short links than expected is a real shortfall.
   const short = [{ id: JOB, full_command: 'https://s.mj.run/ZHJlk7NyOEg a card' }];
   await expect(verifySubmittedReferences({ fetchJson: vi.fn(async () => ({ data: short })) }, 'user-1', [THUMB_A, THUMB_B], [JOB]))
     .rejects.toThrow(/without the requested local reference/);
-  // Jobs absent from history (or history failing) cannot verify; must not fail.
+  // A repeated job carrying no reference link of its own is a shortfall.
+  const second = 'bbbbbbbb-cccc-4ddd-8eee-ffffffffffff';
+  const split = [
+    { id: JOB, full_command: 'https://s.mj.run/ZHJlk7NyOEg https://s.mj.run/FpKVv6BBWRk a card' },
+    { id: second, full_command: 'a card' },
+  ];
+  await expect(verifySubmittedReferences({ fetchJson: vi.fn(async () => ({ data: split })) }, 'user-1', [THUMB_A, THUMB_B], [JOB, second]))
+    .rejects.toThrow(/without the requested local reference/);
+  // Jobs absent from history (or history failing) cannot verify; warns, must not fail.
   await verifySubmittedReferences({ fetchJson: vi.fn(async () => ({ data: [] })) }, 'user-1', [THUMB_A], [JOB]);
   await verifySubmittedReferences({ fetchJson: vi.fn(async () => { throw new Error('HTTP 503'); }) }, 'user-1', [THUMB_A], [JOB]);
 });

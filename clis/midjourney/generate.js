@@ -228,8 +228,11 @@ cli({
       );
     }
     // What the submitted jobs actually carry is the last word on whether the
-    // local references made it into the paid submission.
-    await verifySubmittedReferences(page, account.user_id, uploadedLocalRefs, jobIds);
+    // local references made it into the paid submission. Remote s.mj.run
+    // references embedded in the prompt are not evidence of the local uploads.
+    const remoteSjRunCount = [...remoteReferences.image, ...remoteReferences.style, ...remoteReferences.omni]
+      .filter((url) => /\/\/s\.mj\.run\//.test(url)).length;
+    await verifySubmittedReferences(page, account.user_id, uploadedLocalRefs, jobIds, remoteSjRunCount);
 
     if (!normalizeBoolean(kwargs.wait, true)) {
       const after = await getMidjourneyAccount(page);
