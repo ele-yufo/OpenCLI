@@ -1319,6 +1319,24 @@ export async function clickComposerSubmit(page) {
   await page.click('[data-opencli-composer-submit="1"]');
 }
 
+export async function ensureImageComposer(page) {
+  const composerMode = async () => unwrapEvaluateResult(await page.evaluate(() => {
+    const visible = (button) => Boolean(button && button.getBoundingClientRect().width > 0);
+    if (visible(document.querySelector('button[title="Switch to Image"]'))) return 'video';
+    if (visible(document.querySelector('button[title="Switch to Video"]'))) return 'image';
+    return 'unknown';
+  }));
+  for (let attempt = 0; attempt < 3; attempt += 1) {
+    const mode = await composerMode();
+    if (mode !== 'video') return;
+    await clickVisibleControl(page, 'Switch to Image');
+    await page.wait(0.75);
+  }
+  if (await composerMode() === 'video') {
+    throw new CommandExecutionError('Midjourney composer did not switch from video to image mode');
+  }
+}
+
 // The redesigned imagine page keeps the settings surface in a popover opened
 // from the composer's Settings icon button. The button carries no stable text
 // or aria-label — its SVG icon id is the only stable handle — and a DOM click
@@ -1334,7 +1352,7 @@ export async function isSettingsPanelVisible(page) {
     };
     return Boolean([...document.querySelectorAll('[aria-haspopup="menu"]')]
       .filter(visible)
-      .find((node) => /^(?:niji\s*)?\d/.test(node.textContent?.trim() || '')));
+      .find((node) => /^(?:niji\s*)?\d/i.test(node.textContent?.trim() || '')));
   })));
 }
 
@@ -1395,7 +1413,7 @@ export async function readSiteSettings(page) {
     };
     const trigger = [...document.querySelectorAll('[aria-haspopup="menu"]')]
       .filter(visible)
-      .find((node) => /^(?:niji\s*)?\d/.test(node.textContent?.trim() || ''));
+      .find((node) => /^(?:niji\s*)?\d/i.test(node.textContent?.trim() || ''));
     let scope = trigger;
     for (let depth = 0; depth < 8 && scope; depth += 1) scope = scope.parentElement;
     for (const scroller of scope ? [scope, ...scope.querySelectorAll('*')] : []) {
@@ -1417,7 +1435,7 @@ export async function readSiteSettings(page) {
     const trigger = [...document.querySelectorAll('[aria-haspopup="menu"]')]
       .filter(visible)
       .map((node) => (node.textContent || '').trim())
-      .find((text) => /^(?:niji\s*)?\d/.test(text)) || null;
+      .find((text) => /^(?:niji\s*)?\d/i.test(text)) || null;
     let model = null;
     if (trigger) {
       const niji = /^niji\s*(\d+(?:\.\d+)?)/i.exec(trigger);
@@ -1455,7 +1473,7 @@ export async function readSiteSettings(page) {
       raw: raw ? raw === 'Raw' : null,
       speed: speed ? speed.toLowerCase() : null,
       videoResolution: videoResolution ? videoResolution.toLowerCase() : null,
-      videoBatchSize,
+      videoBatchSize: videoBatchSize ? Number(videoBatchSize) || null : null,
     };
   }));
   if (!result || typeof result !== 'object') throw new CommandExecutionError('Midjourney settings panel returned an unexpected shape');
