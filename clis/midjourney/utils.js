@@ -1255,14 +1255,14 @@ export async function verifySubmittedReferences(page, userId, uploadedUrls, jobI
     return;
   }
   const perJob = commands.map((command) => (command.match(/https:\/\/s\.mj\.run\/\S+/g) || []).length);
-  const total = perJob.reduce((sum, count) => sum + count, 0);
-  // Remote HTTPS references the caller embedded can themselves be s.mj.run
-  // links, so they are not evidence of the local uploads.
+  // Every submitted job repeats the full reference set. Remote HTTPS
+  // references the caller embedded can themselves be s.mj.run links, so the
+  // expected count per job includes them.
   const expected = uploadedUrls.length + remoteReferenceCount;
-  if (total >= expected && perJob.every((count) => count > 0)) return;
+  if (perJob.every((count) => count >= expected)) return;
   throw new CommandExecutionError(
     'Midjourney submitted without the requested local reference(s)',
-    `The submitted job(s) ${jobIds.join(', ')} carry ${total} reference link(s) for ${expected} requested image(s). Cancel or re-edit them in the web app.`,
+    `The submitted job(s) ${jobIds.join(', ')} carry ${Math.min(...perJob)} reference link(s) each for ${expected} requested image(s). Cancel or re-edit them in the web app.`,
   );
 }
 

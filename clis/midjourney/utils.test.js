@@ -757,11 +757,11 @@ it('submitted jobs must carry a reference short link per uploaded image', async 
   const short = [{ id: JOB, full_command: 'https://s.mj.run/ZHJlk7NyOEg a card' }];
   await expect(verifySubmittedReferences({ fetchJson: vi.fn(async () => ({ data: short })) }, 'user-1', [THUMB_A, THUMB_B], [JOB]))
     .rejects.toThrow(/without the requested local reference/);
-  // A repeated job carrying no reference link of its own is a shortfall.
+  // A repeated job carrying fewer links than the full reference set is a shortfall.
   const second = 'bbbbbbbb-cccc-4ddd-8eee-ffffffffffff';
   const split = [
     { id: JOB, full_command: 'https://s.mj.run/ZHJlk7NyOEg https://s.mj.run/FpKVv6BBWRk a card' },
-    { id: second, full_command: 'a card' },
+    { id: second, full_command: 'https://s.mj.run/ZHJlk7NyOEg a card' },
   ];
   await expect(verifySubmittedReferences({ fetchJson: vi.fn(async () => ({ data: split })) }, 'user-1', [THUMB_A, THUMB_B], [JOB, second]))
     .rejects.toThrow(/without the requested local reference/);
