@@ -745,17 +745,17 @@ it('prompt attachments accounted for before the paid submit', async () => {
     .rejects.toThrow(/attachments could not be read/);
 });
 
-it('submitted captures must mention every uploaded local reference', async () => {
-  const captures = [{ prompt: `a room https://cdn.midjourney.com/u/11111111-2222-3333-4444-555555555555/aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa_384_N.png`, success: [{ job_id: JOB }] }];
-  verifySubmittedReferences(captures, [THUMB_A], [JOB]);
-  // No captures at all (older Browser Bridge) cannot verify; it must not fail.
-  verifySubmittedReferences([], [THUMB_A], [JOB]);
-  expect(() => verifySubmittedReferences(captures, [THUMB_A, THUMB_B], [JOB]))
-    .toThrow(/submitted without 1 of the requested local reference\(s\)/);
-  try {
-    verifySubmittedReferences(captures, [THUMB_A, THUMB_B], [JOB]);
-    expect.unreachable('expected verifySubmittedReferences to throw');
-  } catch (error) {
-    expect(error.hint).toContain(JOB);
-  }
+it('submitted jobs must carry a reference short link per uploaded image', async () => {
+  const history = [
+    { id: JOB, full_command: 'https://s.mj.run/ZHJlk7NyOEg https://s.mj.run/FpKVv6BBWRk a card --ar 1:1' },
+  ];
+  const page = { fetchJson: vi.fn(async () => ({ data: history })) };
+  await verifySubmittedReferences(page, 'user-1', [THUMB_A, THUMB_B], [JOB]);
+  // Fewer short links than references is a real shortfall.
+  const short = [{ id: JOB, full_command: 'https://s.mj.run/ZHJlk7NyOEg a card' }];
+  await expect(verifySubmittedReferences({ fetchJson: vi.fn(async () => ({ data: short })) }, 'user-1', [THUMB_A, THUMB_B], [JOB]))
+    .rejects.toThrow(/without the requested local reference/);
+  // Jobs absent from history (or history failing) cannot verify; must not fail.
+  await verifySubmittedReferences({ fetchJson: vi.fn(async () => ({ data: [] })) }, 'user-1', [THUMB_A], [JOB]);
+  await verifySubmittedReferences({ fetchJson: vi.fn(async () => { throw new Error('HTTP 503'); }) }, 'user-1', [THUMB_A], [JOB]);
 });

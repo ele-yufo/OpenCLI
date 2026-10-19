@@ -1229,24 +1229,32 @@ export async function verifyPromptAttachments(page, uploadedUrls) {
   }
 }
 
-// Cross-checks the captured /api/submit-jobs payloads: every uploaded local
-// reference must appear in what was actually submitted. The interceptor array
-// is scoped: installing the submit-jobs pattern replaces any earlier pattern
-// and the caller drains it before the submit, so the captures here are only
-// this session's submit responses. Skipped when no captures exist (older
-// Browser Bridge builds); a mismatch after a submit is reported with the job
-// ids so the spent submission can be identified.
-export function verifySubmittedReferences(captures, uploadedUrls, jobIds = []) {
-  if (!uploadedUrls.length || !Array.isArray(captures) || !captures.length) return;
-  // Normalize both sides: submitted prompts embed resized `_<size>_N` variants
-  // of the uploaded storage URLs.
-  const body = JSON.stringify(captures).replace(/_\d+_N(?=\.)/gi, '').toLowerCase();
-  const missing = uploadedUrls.filter((url) => !body.includes(refUrlBase(url)));
-  if (!missing.length) return;
-  const jobs = jobIds.length ? ` Job(s) ${jobIds.join(', ')} were submitted; cancel or re-edit them in the web app.` : '';
+// Verifies, from the submitted jobs' own full_command, that the local
+// references made it into the paid submission. Midjourney serializes dropped
+// references as https://s.mj.run/<code> short links — not the CDN storage URLs
+// the panel shows — so the check counts the short links across the submitted
+// jobs' commands. Best-effort: when the jobs cannot be found in recent
+// history the check is skipped (the pre-submit slot and attachment
+// verification already gated the paid click); a real shortfall is reported
+// with the job ids so the spent submission can be identified.
+export async function verifySubmittedReferences(page, userId, uploadedUrls, jobIds = []) {
+  if (!uploadedUrls.length || !jobIds.length) return;
+  let jobs;
+  try {
+    jobs = await fetchHistory(page, userId, Math.max(20, jobIds.length * 2));
+  } catch {
+    return;
+  }
+  const wanted = new Set(jobIds.map((id) => String(id).toLowerCase()));
+  const commands = (Array.isArray(jobs) ? jobs : [])
+    .filter((job) => wanted.has(String(job?.id || '').toLowerCase()))
+    .map((job) => String(job?.full_command || ''));
+  if (commands.length < jobIds.length) return;
+  const shortLinks = commands.join(' ').match(/https:\/\/s\.mj\.run\/\S+/g) || [];
+  if (shortLinks.length >= uploadedUrls.length) return;
   throw new CommandExecutionError(
-    `Midjourney submitted without ${missing.length} of the requested local reference(s)`,
-    `The submitted request does not mention ${missing.map((url) => refUrlBase(url)).join(', ')}.${jobs}`,
+    `Midjourney submitted without the requested local reference(s)`,
+    `The submitted job(s) ${jobIds.join(', ')} carry ${shortLinks.length} reference link(s) for ${uploadedUrls.length} requested image(s). Cancel or re-edit them in the web app.`,
   );
 }
 

@@ -227,9 +227,9 @@ cli({
         plan.repeat,
       );
     }
-    // What the submit request actually carried is the last word on whether
-    // the local references made it into the paid submission.
-    verifySubmittedReferences(submitCaptures, uploadedLocalRefs, jobIds);
+    // What the submitted jobs actually carry is the last word on whether the
+    // local references made it into the paid submission.
+    await verifySubmittedReferences(page, account.user_id, uploadedLocalRefs, jobIds);
 
     if (!normalizeBoolean(kwargs.wait, true)) {
       const after = await getMidjourneyAccount(page);
